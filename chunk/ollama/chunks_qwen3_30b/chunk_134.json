@@ -1,0 +1,10 @@
+{
+  "model": "qwen3:30b",
+  "created_at": "2026-02-04T04:07:32.0530304Z",
+  "message": {
+    "role": "assistant",
+    "content": "",
+    "thinking": "抓住"
+  },
+  "done": false
+}

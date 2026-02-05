@@ -1,0 +1,9 @@
+{
+  "model": "qwen3:30b",
+  "created_at": "2026-02-04T04:07:49.4150731Z",
+  "message": {
+    "role": "assistant",
+    "content": "  \n"
+  },
+  "done": false
+}
