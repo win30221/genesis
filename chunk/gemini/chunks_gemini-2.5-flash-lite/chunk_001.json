@@ -1,0 +1,63 @@
+{
+  "sdkHttpResponse": {
+    "headers": {
+      "Alt-Svc": [
+        "h3=\":443\"; ma=2592000,h3-29=\":443\"; ma=2592000"
+      ],
+      "Content-Disposition": [
+        "attachment"
+      ],
+      "Content-Type": [
+        "text/event-stream"
+      ],
+      "Date": [
+        "Wed, 04 Feb 2026 03:47:07 GMT"
+      ],
+      "Server": [
+        "scaffolding on HTTPServer2"
+      ],
+      "Server-Timing": [
+        "gfet4t7; dur=518"
+      ],
+      "Vary": [
+        "Origin",
+        "X-Origin",
+        "Referer"
+      ],
+      "X-Content-Type-Options": [
+        "nosniff"
+      ],
+      "X-Frame-Options": [
+        "SAMEORIGIN"
+      ],
+      "X-Xss-Protection": [
+        "0"
+      ]
+    }
+  },
+  "candidates": [
+    {
+      "content": {
+        "parts": [
+          {
+            "text": "Go Channel "
+          }
+        ],
+        "role": "model"
+      }
+    }
+  ],
+  "modelVersion": "gemini-2.5-flash-lite",
+  "responseId": "O8GCaaGQDoCdosUP-rP6kAU",
+  "usageMetadata": {
+    "candidatesTokenCount": 2,
+    "promptTokenCount": 13,
+    "promptTokensDetails": [
+      {
+        "modality": "TEXT",
+        "tokenCount": 13
+      }
+    ],
+    "totalTokenCount": 15
+  }
+}

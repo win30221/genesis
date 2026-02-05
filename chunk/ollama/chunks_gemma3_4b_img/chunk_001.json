@@ -1,0 +1,9 @@
+{
+  "model": "gemma3:4b",
+  "created_at": "2026-02-04T05:47:24.2029069Z",
+  "message": {
+    "role": "assistant",
+    "content": "這"
+  },
+  "done": false
+}

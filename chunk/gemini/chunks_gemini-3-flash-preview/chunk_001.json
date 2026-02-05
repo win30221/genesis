@@ -1,0 +1,63 @@
+{
+  "sdkHttpResponse": {
+    "headers": {
+      "Alt-Svc": [
+        "h3=\":443\"; ma=2592000,h3-29=\":443\"; ma=2592000"
+      ],
+      "Content-Disposition": [
+        "attachment"
+      ],
+      "Content-Type": [
+        "text/event-stream"
+      ],
+      "Date": [
+        "Wed, 04 Feb 2026 02:57:11 GMT"
+      ],
+      "Server": [
+        "scaffolding on HTTPServer2"
+      ],
+      "Server-Timing": [
+        "gfet4t7; dur=2431"
+      ],
+      "Vary": [
+        "Origin",
+        "X-Origin",
+        "Referer"
+      ],
+      "X-Content-Type-Options": [
+        "nosniff"
+      ],
+      "X-Frame-Options": [
+        "SAMEORIGIN"
+      ],
+      "X-Xss-Protection": [
+        "0"
+      ]
+    }
+  },
+  "candidates": [
+    {
+      "content": {
+        "parts": [
+          {
+            "text": "**Defining Go Channels**\n\nI'm focusing on defining Go channels. Initially, I'm thinking of it as a brief explanation and short answer, specifically using Traditional Chinese (Cantonese/Traditional Chinese). I'm considering what they are, and using the analogy of a pipe or conveyor belt. The primary purpose is clear: enabling data exchange between goroutines for concurrency.\n\n\n",
+            "thought": true
+          }
+        ],
+        "role": "model"
+      }
+    }
+  ],
+  "modelVersion": "gemini-3-flash-preview",
+  "responseId": "h7WCacK7Brqc1e8PlMLnuQ0",
+  "usageMetadata": {
+    "promptTokenCount": 13,
+    "promptTokensDetails": [
+      {
+        "modality": "TEXT",
+        "tokenCount": 13
+      }
+    ],
+    "totalTokenCount": 13
+  }
+}

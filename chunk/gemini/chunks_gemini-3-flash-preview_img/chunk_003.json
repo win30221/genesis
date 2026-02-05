@@ -1,0 +1,63 @@
+{
+  "sdkHttpResponse": {
+    "headers": {
+      "Alt-Svc": [
+        "h3=\":443\"; ma=2592000,h3-29=\":443\"; ma=2592000"
+      ],
+      "Content-Disposition": [
+        "attachment"
+      ],
+      "Content-Type": [
+        "text/event-stream"
+      ],
+      "Date": [
+        "Wed, 04 Feb 2026 06:16:34 GMT"
+      ],
+      "Server": [
+        "scaffolding on HTTPServer2"
+      ],
+      "Server-Timing": [
+        "gfet4t7; dur=4657"
+      ],
+      "Vary": [
+        "Origin",
+        "X-Origin",
+        "Referer"
+      ],
+      "X-Content-Type-Options": [
+        "nosniff"
+      ],
+      "X-Frame-Options": [
+        "SAMEORIGIN"
+      ],
+      "X-Xss-Protection": [
+        "0"
+      ]
+    }
+  },
+  "candidates": [
+    {
+      "content": {
+        "parts": [
+          {
+            "text": "**Refining Contextual Narrative**\n\nI'm now zeroing in on a refined narrative. I am constructing explanations based on both English and Chinese translations. My current focus is how the labeled landmarks provide a precise location for the motorcycle, potentially for legal or speed-related reasons, and how the landmarks support this. I've begun to translate my explanation into Chinese to refine the accuracy of my analysis.\n\n\n",
+            "thought": true
+          }
+        ],
+        "role": "model"
+      }
+    }
+  ],
+  "modelVersion": "gemini-3-flash-preview",
+  "responseId": "QuSCaZKMKp-cosUPrcrzoQQ",
+  "usageMetadata": {
+    "promptTokenCount": 8,
+    "promptTokensDetails": [
+      {
+        "modality": "TEXT",
+        "tokenCount": 8
+      }
+    ],
+    "totalTokenCount": 8
+  }
+}

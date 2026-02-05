@@ -1,0 +1,64 @@
+{
+  "sdkHttpResponse": {
+    "headers": {
+      "Alt-Svc": [
+        "h3=\":443\"; ma=2592000,h3-29=\":443\"; ma=2592000"
+      ],
+      "Content-Disposition": [
+        "attachment"
+      ],
+      "Content-Type": [
+        "text/event-stream"
+      ],
+      "Date": [
+        "Wed, 04 Feb 2026 06:16:34 GMT"
+      ],
+      "Server": [
+        "scaffolding on HTTPServer2"
+      ],
+      "Server-Timing": [
+        "gfet4t7; dur=4657"
+      ],
+      "Vary": [
+        "Origin",
+        "X-Origin",
+        "Referer"
+      ],
+      "X-Content-Type-Options": [
+        "nosniff"
+      ],
+      "X-Frame-Options": [
+        "SAMEORIGIN"
+      ],
+      "X-Xss-Protection": [
+        "0"
+      ]
+    }
+  },
+  "candidates": [
+    {
+      "content": {
+        "parts": [
+          {
+            "text": "樹位於欄杆之間且位置偏左。\n\n**這張圖的目的通常有兩種：**\n*   **計算車"
+          }
+        ],
+        "role": "model"
+      }
+    }
+  ],
+  "modelVersion": "gemini-3-flash-preview",
+  "responseId": "QuSCaZKMKp-cosUPrcrzoQQ",
+  "usageMetadata": {
+    "candidatesTokenCount": 159,
+    "promptTokenCount": 8,
+    "promptTokensDetails": [
+      {
+        "modality": "TEXT",
+        "tokenCount": 8
+      }
+    ],
+    "thoughtsTokenCount": 815,
+    "totalTokenCount": 982
+  }
+}

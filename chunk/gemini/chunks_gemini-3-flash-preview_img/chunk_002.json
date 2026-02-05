@@ -1,0 +1,63 @@
+{
+  "sdkHttpResponse": {
+    "headers": {
+      "Alt-Svc": [
+        "h3=\":443\"; ma=2592000,h3-29=\":443\"; ma=2592000"
+      ],
+      "Content-Disposition": [
+        "attachment"
+      ],
+      "Content-Type": [
+        "text/event-stream"
+      ],
+      "Date": [
+        "Wed, 04 Feb 2026 06:16:34 GMT"
+      ],
+      "Server": [
+        "scaffolding on HTTPServer2"
+      ],
+      "Server-Timing": [
+        "gfet4t7; dur=4657"
+      ],
+      "Vary": [
+        "Origin",
+        "X-Origin",
+        "Referer"
+      ],
+      "X-Content-Type-Options": [
+        "nosniff"
+      ],
+      "X-Frame-Options": [
+        "SAMEORIGIN"
+      ],
+      "X-Xss-Protection": [
+        "0"
+      ]
+    }
+  },
+  "candidates": [
+    {
+      "content": {
+        "parts": [
+          {
+            "text": "**Analyzing Background Features**\n\nI've moved on to examining the background elements. The image quality is low-resolution, suggesting a print or screen capture. The labels, in Traditional Chinese, focus on roadside features: trees and a particular fence/guardrail. I'm now contemplating the potential reasons for these detailed background annotations, as they seem designed to provide context beyond the immediate subject of the motorcyclist. It's likely related to speed, position, or legal matters.\n\n\n",
+            "thought": true
+          }
+        ],
+        "role": "model"
+      }
+    }
+  ],
+  "modelVersion": "gemini-3-flash-preview",
+  "responseId": "QuSCaZKMKp-cosUPrcrzoQQ",
+  "usageMetadata": {
+    "promptTokenCount": 8,
+    "promptTokensDetails": [
+      {
+        "modality": "TEXT",
+        "tokenCount": 8
+      }
+    ],
+    "totalTokenCount": 8
+  }
+}

@@ -1,0 +1,64 @@
+{
+  "sdkHttpResponse": {
+    "headers": {
+      "Alt-Svc": [
+        "h3=\":443\"; ma=2592000,h3-29=\":443\"; ma=2592000"
+      ],
+      "Content-Disposition": [
+        "attachment"
+      ],
+      "Content-Type": [
+        "text/event-stream"
+      ],
+      "Date": [
+        "Wed, 04 Feb 2026 03:37:05 GMT"
+      ],
+      "Server": [
+        "scaffolding on HTTPServer2"
+      ],
+      "Server-Timing": [
+        "gfet4t7; dur=1650"
+      ],
+      "Vary": [
+        "Origin",
+        "X-Origin",
+        "Referer"
+      ],
+      "X-Content-Type-Options": [
+        "nosniff"
+      ],
+      "X-Frame-Options": [
+        "SAMEORIGIN"
+      ],
+      "X-Xss-Protection": [
+        "0"
+      ]
+    }
+  },
+  "candidates": [
+    {
+      "content": {
+        "parts": [
+          {
+            "text": "**Defining Core Concepts**\n\nOkay, I'm focusing on the core request and breaking it down. I've pinpointed the need for a simple and brief explanation of Go channels. Now, I'm identifying the keywords and core concepts that need to be included in the response, such as communication and goroutines to address concurrency. I'm aiming for brevity while maintaining clarity.\n\n\n",
+            "thought": true
+          }
+        ],
+        "role": "model"
+      }
+    }
+  ],
+  "modelVersion": "gemini-2.5-flash",
+  "responseId": "4L6Caab5B87Y1e8P4_7_wAs",
+  "usageMetadata": {
+    "promptTokenCount": 13,
+    "promptTokensDetails": [
+      {
+        "modality": "TEXT",
+        "tokenCount": 13
+      }
+    ],
+    "thoughtsTokenCount": 69,
+    "totalTokenCount": 82
+  }
+}

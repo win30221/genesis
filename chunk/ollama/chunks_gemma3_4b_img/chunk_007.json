@@ -1,0 +1,9 @@
+{
+  "model": "gemma3:4b",
+  "created_at": "2026-02-04T05:47:24.6582278Z",
+  "message": {
+    "role": "assistant",
+    "content": "餐廳"
+  },
+  "done": false
+}

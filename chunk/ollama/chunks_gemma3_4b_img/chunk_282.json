@@ -1,0 +1,16 @@
+{
+  "model": "gemma3:4b",
+  "created_at": "2026-02-04T05:47:47.657934Z",
+  "message": {
+    "role": "assistant",
+    "content": ""
+  },
+  "done": true,
+  "done_reason": "stop",
+  "total_duration": 126662881900,
+  "load_duration": 2163157600,
+  "prompt_eval_count": 275,
+  "prompt_eval_duration": 6740957100,
+  "eval_count": 282,
+  "eval_duration": 23290204100
+}
