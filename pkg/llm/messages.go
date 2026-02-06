@@ -48,7 +48,7 @@ type FunctionCall struct {
 type ContentBlock struct {
 	Type string `json:"type"` // "text", "thinking", "image"
 
-	// Text 相關（type: "text" | "thinking"）
+	// Text 相關（type: "text" | "thinking" | "error"）
 	Text string `json:"text,omitempty"`
 
 	// Image 相關（type: "image"）
@@ -121,6 +121,9 @@ type StreamChunk struct {
 
 	// 用量統計（可能在中間 chunk 就有，但最後 chunk 一定有）
 	Usage *LLMUsage `json:"usage,omitempty"`
+
+	// Error 表示 stream 中發生的錯誤（不應加入歷史，只顯示給使用者）
+	Error string `json:"error,omitempty"`
 }
 
 //----------------------------------------------------------------
@@ -222,6 +225,14 @@ func NewThinkingBlock(text string) ContentBlock {
 	}
 }
 
+// NewErrorBlock 建立錯誤區塊
+func NewErrorBlock(text string) ContentBlock {
+	return ContentBlock{
+		Type: "error",
+		Text: text,
+	}
+}
+
 // NewImageBlock 建立圖片區塊（base64）
 func NewImageBlock(data []byte, mimeType string) ContentBlock {
 	return ContentBlock{
@@ -276,5 +287,13 @@ func NewFinalChunk(reason string, usage *LLMUsage) StreamChunk {
 		IsFinal:      true,
 		FinishReason: reason,
 		Usage:        usage,
+	}
+}
+
+// NewErrorChunk 建立錯誤 chunk（不應加入歷史，只顯示給使用者）
+func NewErrorChunk(errMsg string, isFinal bool) StreamChunk {
+	return StreamChunk{
+		Error:   errMsg,
+		IsFinal: isFinal,
 	}
 }

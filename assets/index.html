@@ -683,6 +683,37 @@
             transform: scale(1.05);
             filter: brightness(1.1);
         }
+
+        /* Error Message Styles */
+        .error-message {
+            color: #ef4444;
+            background: rgba(239, 68, 68, 0.1);
+            border: 1px solid rgba(239, 68, 68, 0.2);
+            padding: 0.75rem 1rem;
+            border-radius: 0.75rem;
+            margin: 1rem 0;
+            font-size: 0.9rem;
+            display: flex;
+            align-items: center;
+            gap: 0.6rem;
+            font-weight: 500;
+            animation: fadeIn 0.3s ease-out;
+            line-height: 1.5;
+            white-space: pre-wrap;
+        }
+
+        .error-message svg {
+            flex-shrink: 0;
+            width: 18px;
+            height: 18px;
+        }
+
+        /* ... (保持原有樣式) ... */
+        .error-message {
+            border: 2px solid #ef4444 !important;
+            /* 加強邊框 */
+            box-shadow: 0 0 10px rgba(239, 68, 68, 0.2);
+        }
     </style>
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 </head>
@@ -791,6 +822,7 @@
         let currentStreamDiv = null;
         let currentStreamRaw = "";
         let currentThinkingRaw = "";
+        let currentErrorRaw = "";
         let currentThinkingDetails = null;
         const thinkingWrapper = document.getElementById('thinking-wrapper');
 
@@ -817,6 +849,14 @@
 
         // Scroll to bottom when button is clicked
         scrollToBottomBtn.addEventListener('click', scrollToBottom);
+
+        // Helper to escape HTML and prevent XSS
+        function escapeHtml(text) {
+            if (!text) return "";
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
 
         function appendMessage(role, text, images = []) {
             const wrapper = document.createElement('div');
@@ -874,6 +914,7 @@
             // 1. 確保容器結構存在
             let thinkingContainer = currentStreamDiv.querySelector('.thinking-container');
             let contentContainer = currentStreamDiv.querySelector('.content-container');
+            let errorContainer = currentStreamDiv.querySelector('.error-container');
 
             if (!thinkingContainer) {
                 // 初始化 Thinking Container
@@ -892,6 +933,13 @@
                 contentContainer = document.createElement('div');
                 contentContainer.className = 'content-container';
                 currentStreamDiv.appendChild(contentContainer);
+            }
+
+            if (!errorContainer) {
+                // 初始化 Error Container
+                errorContainer = document.createElement('div');
+                errorContainer.className = 'error-container';
+                currentStreamDiv.appendChild(errorContainer);
             }
 
             // 2. 更新 Thinking 內容
@@ -926,10 +974,32 @@
             } else {
                 contentContainer.innerHTML = '';
             }
+
+            // 4. 更新錯誤內容
+            if (currentErrorRaw) {
+                // 如果已經有錯誤訊息，更新它
+                let errorDiv = errorContainer.querySelector('.error-message');
+                if (!errorDiv) {
+                    errorDiv = document.createElement('div');
+                    errorDiv.className = 'error-message';
+                    errorDiv.innerHTML = `
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <circle cx="12" cy="12" r="10"></circle>
+                            <line x1="15" y1="9" x2="9" y2="15"></line>
+                            <line x1="9" y1="9" x2="15" y2="15"></line>
+                        </svg>
+                        <span class="error-text"></span>
+                    `;
+                    errorContainer.appendChild(errorDiv);
+                }
+                errorDiv.querySelector('.error-text').textContent = currentErrorRaw.replace(/^\n/, ''); // 移除前導換行
+            } else {
+                errorContainer.innerHTML = '';
+            }
         }
 
-        // 添加帶有 thinking 的訊息（用於歷史記錄）
-        function appendMessageWithThinking(role, text, thinkingText) {
+        // 添加完整內容的訊息（用於歷史記錄）
+        function appendMessageWithFullContent(role, text, thinkingText, errorText) {
             const wrapper = document.createElement('div');
             wrapper.className = 'message-wrapper';
 
@@ -948,7 +1018,23 @@
 
             // 添加回應內容
             if (text) {
-                html += marked.parse(text);
+                html += '<div class="content-container">' + marked.parse(text) + '</div>';
+            }
+
+            // 添加錯誤內容
+            if (errorText) {
+                // 更魯棒的正則表達式來清理前導換行和圖示
+                const cleanError = errorText.replace(/^\n/, '').replace(/^❌\s*/, '').replace(/^\n/, '');
+                html += `
+                    <div class="error-message">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <circle cx="12" cy="12" r="10"></circle>
+                            <line x1="15" y1="9" x2="9" y2="15"></line>
+                            <line x1="9" y1="9" x2="15" y2="15"></line>
+                        </svg>
+                        <span class="error-text">${escapeHtml(cleanError)}</span>
+                    </div>
+                `;
             }
 
             msgDiv.innerHTML = html;
@@ -1032,14 +1118,16 @@
                             });
                             appendMessage('user', text, images);
                         } else if (msg.role === 'assistant') {
-                            // 分離 thinking 和 text
+                            // 分離 thinking, text, error
                             let thinkingText = "";
                             let responseText = "";
-                            msg.content.forEach(block => {
+                            let errorText = "";
+                            msg.content.forEach((block, idx) => {
                                 if (block.type === 'thinking') thinkingText += block.text;
                                 if (block.type === 'text') responseText += block.text;
+                                if (block.type === 'error') errorText += block.text;
                             });
-                            appendMessageWithThinking('bot', responseText, thinkingText);
+                            appendMessageWithFullContent('bot', responseText, thinkingText, errorText);
                         }
                     });
                     return;
@@ -1050,11 +1138,13 @@
                     thinkingWrapper.style.display = 'none';
                     currentStreamDiv = null;
                     currentStreamRaw = "";
+                    currentThinkingRaw = "";
+                    currentErrorRaw = "";
                     return;
                 }
 
-                // 處理 Text / Thinking
-                if (data.type === 'text' || data.type === 'thinking') {
+                // 處理 Text / Thinking / Error
+                if (data.type === 'text' || data.type === 'thinking' || data.type === 'error') {
                     // 隱藏 thinking wrapper (如果它是 signal 觸發顯示的)
                     thinkingWrapper.style.display = 'none';
 
@@ -1070,6 +1160,7 @@
                         chatContainer.appendChild(thinkingWrapper);
                         currentStreamRaw = "";
                         currentThinkingRaw = "";
+                        currentErrorRaw = "";
                         currentThinkingDetails = null;
                     }
 
@@ -1083,6 +1174,14 @@
                         renderBotMessage();
                     } else if (data.type === 'thinking') {
                         currentThinkingRaw += data.text;
+                        renderBotMessage();
+                    } else if (data.type === 'error') {
+                        console.log("⚠️ Received error block:", data.text);
+                        // 收到錯誤也隱藏 thinking (如果有的話)
+                        if (currentThinkingDetails && currentStreamRaw === "") {
+                            currentThinkingDetails.open = false;
+                        }
+                        currentErrorRaw += data.text;
                         renderBotMessage();
                     }
 

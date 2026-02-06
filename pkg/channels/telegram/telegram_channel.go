@@ -285,9 +285,9 @@ func (t *TelegramChannel) Stream(session gateway.SessionContext, blocks <-chan l
 		switch block.Type {
 		case "thinking":
 			thinkingBuffer += block.Text
-		case "text":
+		case "text", "error":
 			// 當收到第一個文字塊時，如果思考內容還沒發送，先發送思考內容
-			if thinkingBuffer != "" && !thinkingSent {
+			if (block.Type == "text" || block.Type == "error") && thinkingBuffer != "" && !thinkingSent {
 				thinkingMsg := "💭 思考過程：\n\n" + thinkingBuffer
 				if err := t.Send(session, thinkingMsg); err != nil {
 					log.Printf("❌ Failed to send thinking message: %v", err)

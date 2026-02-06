@@ -177,7 +177,7 @@ func (c *WebChannel) handleWebSocket(w http.ResponseWriter, r *http.Request, ctx
 
 	// 立即發送歷史紀錄（若有）
 	historyMsgs := c.history.GetMessages()
-	if len(historyMsgs) > 1 { // 排除只有一個 System Prompt 的情況 (選用)
+	if len(historyMsgs) > 0 {
 		historyData := map[string]interface{}{
 			"type": "history",
 			"data": historyMsgs,

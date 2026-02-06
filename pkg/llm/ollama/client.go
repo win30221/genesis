@@ -103,7 +103,7 @@ func (o *OllamaClient) StreamChat(ctx context.Context, messages []llm.Message, a
 				log.Printf("[Ollama] ❌ Failed to marshal tools: %v", err)
 			} else {
 				if err := json.Unmarshal(rawB, &ollamaTools); err != nil {
-					log.Printf("[Ollama] ❌ Failed to unmarshal to api.Tool: %v", err)
+					log.Printf("[Ollama] ❌ Failed to unmarshal to api.Tool: %v, data: %s", err, string(rawB))
 				}
 			}
 		}
@@ -150,7 +150,11 @@ func (o *OllamaClient) StreamChat(ctx context.Context, messages []llm.Message, a
 				// log.Printf("[Ollama] 🛠️ Received ToolCalls: %d", len(resp.Message.ToolCalls))
 				var toolCalls []llm.ToolCall
 				for _, tc := range resp.Message.ToolCalls {
-					argsB, _ := json.Marshal(tc.Function.Arguments)
+					argsB, err := json.Marshal(tc.Function.Arguments)
+					if err != nil {
+						log.Printf("[Ollama] ⚠️ Failed to marshal tool call arguments: %v, original data: %+v", err, tc.Function.Arguments)
+						argsB = []byte("{}")
+					}
 					toolCalls = append(toolCalls, llm.ToolCall{
 						ID:   tc.ID, // 改為抓取 ID
 						Name: tc.Function.Name,
@@ -176,13 +180,13 @@ func (o *OllamaClient) StreamChat(ctx context.Context, messages []llm.Message, a
 					StopReason:       resp.DoneReason,
 				}
 
+				// 截斷警告 (放在 FinalChunk 之前，且不結束 stream)
+				if resp.DoneReason == "length" {
+					chunkCh <- llm.NewErrorChunk(fmt.Sprintf("Response truncated due to num_predict limit (%v). You might want to increase it in config.", o.options["num_predict"]), false)
+				}
+
 				chunkCh <- llm.NewFinalChunk(resp.DoneReason, usage)
 				llm.LogUsage(o.model, usage)
-
-				// 截斷警告
-				if resp.DoneReason == "length" {
-					log.Printf("⚠️ [Ollama] Response truncated due to num_predict limit (%v)", o.options["num_predict"])
-				}
 			}
 
 			return nil
@@ -197,8 +201,11 @@ func (o *OllamaClient) StreamChat(ctx context.Context, messages []llm.Message, a
 					// 成功發送給等待者
 				default:
 					// 等待者已超時放棄，改發送錯誤訊息給使用者
-					chunkCh <- llm.NewTextChunk(fmt.Sprintf("\n❌ Error loading model %s: %v", o.model, err))
+					chunkCh <- llm.NewErrorChunk(fmt.Sprintf("Error loading model %s: %v", o.model, err), true)
 				}
+			} else {
+				// Stream 已開始但中途中斷，通知使用者
+				chunkCh <- llm.NewErrorChunk(fmt.Sprintf("Stream interrupted: %v", err), true)
 			}
 		} else if !started {
 			select {
@@ -257,9 +264,15 @@ func (o *OllamaClient) convertMessages(messages []llm.Message) []api.Message {
 
 				// 手動建立 api.ToolCall 以確保 Arguments 被正確處理
 				// api.ToolCallFunctionArguments 支持從 map 反序列化
-				argBytes, _ := json.Marshal(args)
+				argBytes, err := json.Marshal(args)
+				if err != nil {
+					log.Printf("[Ollama] ⚠️ Failed to marshal tool arguments for history: %v, original data: %+v", err, args)
+					argBytes = []byte("{}")
+				}
 				var apiArgs api.ToolCallFunctionArguments
-				_ = json.Unmarshal(argBytes, &apiArgs)
+				if err := json.Unmarshal(argBytes, &apiArgs); err != nil {
+					log.Printf("[Ollama] ⚠️ Failed to unmarshal to api.ToolCallFunctionArguments: %v, JSON string: %s", err, string(argBytes))
+				}
 
 				ollamaToolCalls = append(ollamaToolCalls, api.ToolCall{
 					ID: tc.ID,

@@ -201,6 +201,7 @@ func (h *ChatHandler) processLLMStream(msg *gateway.UnifiedMessage) llm.Message 
 func (h *ChatHandler) collectChunks(session gateway.SessionContext, chunkCh <-chan llm.StreamChunk, blockCh chan<- llm.ContentBlock, alreadySentThinking bool) llm.Message {
 	var textContent string
 	var thinkingContent string
+	var errorContent string
 	firstChunkReceived := false
 
 	// 第一階段：等待第一個 Chunk 或觸發「思考中」計時器
@@ -224,7 +225,7 @@ func (h *ChatHandler) collectChunks(session gateway.SessionContext, chunkCh <-ch
 				thinkingTimer.Stop()
 			}
 			// 處理第一個 chunk
-			textContent, thinkingContent = h.processChunk(chunk, textContent, thinkingContent, blockCh)
+			textContent, thinkingContent, errorContent = h.processChunk(chunk, textContent, thinkingContent, errorContent, blockCh)
 
 		case <-timerChan:
 			h.gw.SendSignal(session, "thinking")
@@ -236,7 +237,7 @@ func (h *ChatHandler) collectChunks(session gateway.SessionContext, chunkCh <-ch
 
 	// 第二階段：處理剩餘的 chunks
 	for chunk := range chunkCh {
-		textContent, thinkingContent = h.processChunk(chunk, textContent, thinkingContent, blockCh)
+		textContent, thinkingContent, errorContent = h.processChunk(chunk, textContent, thinkingContent, errorContent, blockCh)
 
 		// 累積 ToolCalls
 		if len(chunk.ToolCalls) > 0 {
@@ -263,11 +264,22 @@ func (h *ChatHandler) collectChunks(session gateway.SessionContext, chunkCh <-ch
 		msg.Content = append(msg.Content, llm.NewTextBlock(textContent))
 	}
 
+	if errorContent != "" {
+		msg.Content = append(msg.Content, llm.NewErrorBlock(errorContent))
+	}
+
 	return msg
 }
 
 // processChunk 處理單個 chunk 並累積內容
-func (h *ChatHandler) processChunk(chunk llm.StreamChunk, currentText, currentThinking string, blockCh chan<- llm.ContentBlock) (string, string) {
+func (h *ChatHandler) processChunk(chunk llm.StreamChunk, currentText, currentThinking, currentError string, blockCh chan<- llm.ContentBlock) (string, string, string) {
+	// 處理錯誤 chunk（只顯示給使用者，不累積到歷史文字，但累積到錯誤區塊）
+	if chunk.Error != "" {
+		errorMsg := fmt.Sprintf("\n❌ %s", chunk.Error)
+		currentError += errorMsg
+		blockCh <- llm.NewErrorBlock(errorMsg)
+	}
+
 	for _, block := range chunk.ContentBlocks {
 		switch block.Type {
 		case "text":
@@ -284,7 +296,7 @@ func (h *ChatHandler) processChunk(chunk llm.StreamChunk, currentText, currentTh
 		}
 	}
 
-	return currentText, currentThinking
+	return currentText, currentThinking, currentError
 }
 
 // handleSlashCommand 處理手動輸入的指令，格式：/tool_name action {"param": "value"}

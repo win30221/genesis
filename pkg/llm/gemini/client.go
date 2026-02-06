@@ -111,7 +111,7 @@ func (g *GeminiClient) StreamChat(ctx context.Context, messages []llm.Message, a
 						startResultCh <- err
 					} else {
 						// Stream 中斷，通知使用者
-						chunkCh <- llm.NewTextChunk(fmt.Sprintf("\n❌ Stream interrupted: %v", err))
+						chunkCh <- llm.NewErrorChunk(fmt.Sprintf("Stream interrupted: %v", err), true)
 					}
 					break
 				}
@@ -142,6 +142,9 @@ func (g *GeminiClient) StreamChat(ctx context.Context, messages []llm.Message, a
 			for _, candidate := range resp.Candidates {
 				if candidate.FinishReason != "" && lastUsage != nil {
 					lastUsage.StopReason = string(candidate.FinishReason)
+					if candidate.FinishReason == "FINISH_REASON_MAX_TOKENS" {
+						chunkCh <- llm.NewErrorChunk("Response truncated due to max tokens limit. You might want to adjust your prompt or settings.", false)
+					}
 				}
 
 				if candidate.Content != nil {
