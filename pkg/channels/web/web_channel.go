@@ -35,12 +35,23 @@ type IncomingMessage struct {
 	} `json:"images"`
 }
 
+type SafeConn struct {
+	*websocket.Conn
+	mu sync.Mutex
+}
+
+func (sc *SafeConn) WriteMessage(messageType int, data []byte) error {
+	sc.mu.Lock()
+	defer sc.mu.Unlock()
+	return sc.Conn.WriteMessage(messageType, data)
+}
+
 type WebChannel struct {
 	config      WebConfig
 	server      *http.Server
 	gw          *gateway.GatewayManager
-	history     *llm.ChatHistory           // Shared history
-	connections map[string]*websocket.Conn // Map UserID -> WS Connection
+	history     *llm.ChatHistory     // Shared history
+	connections map[string]*SafeConn // Map UserID -> WS Connection
 	mu          sync.RWMutex
 }
 
@@ -49,7 +60,7 @@ func NewWebChannel(cfg WebConfig, gw *gateway.GatewayManager, history *llm.ChatH
 		config:      cfg,
 		gw:          gw,
 		history:     history,
-		connections: make(map[string]*websocket.Conn),
+		connections: make(map[string]*SafeConn),
 	}
 }
 
@@ -147,11 +158,14 @@ func (c *WebChannel) Stream(session gateway.SessionContext, blocks <-chan llm.Co
 }
 
 func (c *WebChannel) handleWebSocket(w http.ResponseWriter, r *http.Request, ctx gateway.ChannelContext) {
-	conn, err := upgrader.Upgrade(w, r, nil)
+	rawConn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		log.Println("WS Upgrade failed:", err)
 		return
 	}
+
+	// Wrap connection
+	conn := &SafeConn{Conn: rawConn}
 
 	// Simple UserID based on RemoteAddr or random
 	userID := r.RemoteAddr

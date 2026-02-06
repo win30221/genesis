@@ -11,9 +11,32 @@ import (
 
 // Message 表示一條對話訊息
 type Message struct {
-	Role      string         `json:"role"`    // "user", "assistant", "system"
+	Role      string         `json:"role"`    // "user", "assistant", "system", "tool"
 	Content   []ContentBlock `json:"content"` // 內容區塊陣列
 	Timestamp int64          `json:"timestamp,omitempty"`
+
+	// ToolUse 包含 LLM 產生的工具調用請求（僅 role: assistant 時有效）
+	ToolCalls []ToolCall `json:"tool_calls,omitempty"`
+
+	// ToolCallID 關聯此訊息所屬的工具調用 ID（僅 role: tool 時有效）
+	ToolCallID string `json:"tool_call_id,omitempty"`
+}
+
+// ToolCall 表示 LLM 產生的工具調用請求
+type ToolCall struct {
+	ID       string       `json:"id"`
+	Name     string       `json:"name"`
+	Function FunctionCall `json:"function"`
+
+	// Meta 保存提供者特定的元數據（例如 Gemini 的 thought_signature）
+	// 不會被序列化到 JSON，僅用於內部傳遞
+	Meta map[string]any `json:"-"`
+}
+
+// FunctionCall 包含具體的工具名稱與參數
+type FunctionCall struct {
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"` // JSON 字串
 }
 
 //----------------------------------------------------------------
@@ -86,6 +109,9 @@ func (is *ImageSource) UnmarshalJSON(data []byte) error {
 type StreamChunk struct {
 	// 內容區塊（增量，只包含新增的內容）
 	ContentBlocks []ContentBlock `json:"content_blocks,omitempty"`
+
+	// 工具調用（增量）
+	ToolCalls []ToolCall `json:"tool_calls,omitempty"`
 
 	// 是否為最後一個 chunk
 	IsFinal bool `json:"is_final"`

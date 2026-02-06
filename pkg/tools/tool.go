@@ -100,3 +100,40 @@ func (tr *ToolRegistry) ToAnthropicFormat() []any {
 	}
 	return tools
 }
+
+// ToGeminiFormat 轉換為 Google Gemini API 格式
+func (tr *ToolRegistry) ToGeminiFormat() any {
+	var fds []map[string]any
+	for _, tool := range tr.tools {
+		fds = append(fds, map[string]any{
+			"name":        tool.Name(),
+			"description": tool.Description(),
+			"parameters": map[string]any{
+				"type":       "object",
+				"properties": tool.Parameters(),
+				"required":   tool.RequiredParameters(),
+			},
+		})
+	}
+	return fds
+}
+
+// ToOllamaFormat 轉換為 Ollama (OpenAI-like) API 格式
+func (tr *ToolRegistry) ToOllamaFormat() []map[string]any {
+	var tools []map[string]any
+	for _, tool := range tr.tools {
+		tools = append(tools, map[string]any{
+			"type": "function",
+			"function": map[string]any{
+				"name":        tool.Name(),
+				"description": tool.Description(),
+				"parameters": map[string]any{
+					"type":       "object",
+					"properties": tool.Parameters(),
+					"required":   tool.RequiredParameters(),
+				},
+			},
+		})
+	}
+	return tools
+}

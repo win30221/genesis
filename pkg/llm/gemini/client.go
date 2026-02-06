@@ -2,6 +2,7 @@ package gemini
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"genesis/pkg/llm"
 	"log"
@@ -33,6 +34,10 @@ func NewGeminiClient(apiKey string, model string, useThought bool) *GeminiClient
 	}
 }
 
+func (g *GeminiClient) Provider() string {
+	return "gemini"
+}
+
 // 格式化 ModalityTokenCount 陣列
 func formatModality(details []*genai.ModalityTokenCount) string {
 	if len(details) == 0 {
@@ -46,13 +51,40 @@ func formatModality(details []*genai.ModalityTokenCount) string {
 }
 
 // StreamChat 實作 LLMClient.StreamChat
-func (g *GeminiClient) StreamChat(ctx context.Context, messages []llm.Message) (<-chan llm.StreamChunk, error) {
+func (g *GeminiClient) StreamChat(ctx context.Context, messages []llm.Message, availableTools any) (<-chan llm.StreamChunk, error) {
 	// 轉換訊息
 	apiMessages, systemInstruction := g.convertMessages(messages)
 
-	chunkCh := make(chan llm.StreamChunk, 100)
-	startResultCh := make(chan error, 1)
+	// 轉換工具
+	var genaiTools []*genai.Tool
+	if availableTools != nil {
+		if tools, ok := availableTools.([]map[string]any); ok {
+			var fds []*genai.FunctionDeclaration
+			for _, t := range tools {
+				fd := &genai.FunctionDeclaration{
+					Name:        t["name"].(string),
+					Description: t["description"].(string),
+				}
+				if params, ok := t["parameters"].(map[string]any); ok {
+					schemaB, _ := json.Marshal(params)
+					var schema genai.Schema
+					json.Unmarshal(schemaB, &schema)
+					fd.Parameters = &schema
+				}
+				fds = append(fds, fd)
+			}
+			if len(fds) > 0 {
+				genaiTools = append(genaiTools, &genai.Tool{
+					FunctionDeclarations: fds,
+				})
+			}
+		}
+	}
 
+	chunkCh := make(chan llm.StreamChunk, 100)
+	startResultCh := make(chan error, 1) // Unbuffered to detect if reader is present
+
+	// log.Printf("[Gemini] 🌊 Streaming with model: %s...", g.model)
 	log.Printf("[Gemini] 🌊 Streaming with model: %s...", g.model)
 
 	go func() {
@@ -60,6 +92,7 @@ func (g *GeminiClient) StreamChat(ctx context.Context, messages []llm.Message) (
 
 		iter := g.client.Models.GenerateContentStream(ctx, g.model, apiMessages, &genai.GenerateContentConfig{
 			SystemInstruction: systemInstruction,
+			Tools:             genaiTools,
 			ThinkingConfig: &genai.ThinkingConfig{
 				IncludeThoughts: true,
 			},
@@ -70,12 +103,21 @@ func (g *GeminiClient) StreamChat(ctx context.Context, messages []llm.Message) (
 
 		for resp, err := range iter {
 			if err != nil {
-				if !started {
-					startResultCh <- err
-				} else {
+				// 嘗試優先處理最後一次 resp (如果有的話)
+				// Google GenAI SDK 迭代器可能在返回錯誤的同時返回最後一點資料
+				if resp == nil {
 					log.Printf("Gemini Stream Error: %v", err)
+					if !started {
+						startResultCh <- err
+					} else {
+						// Stream 中斷，通知使用者
+						chunkCh <- llm.NewTextChunk(fmt.Sprintf("\n❌ Stream interrupted: %v", err))
+					}
+					break
 				}
-				break
+				// 如果 err != nil 但 resp != nil，繼續處理這次的 resp，然後在下一次迭代或是這裡處理錯誤
+				// 根據 Go iterator 慣例，這裡我們記錄錯誤但繼續處理當前數據
+				log.Printf("Gemini Stream Error (with data): %v", err)
 			}
 
 			if !started {
@@ -104,6 +146,8 @@ func (g *GeminiClient) StreamChat(ctx context.Context, messages []llm.Message) (
 
 				if candidate.Content != nil {
 					var blocks []llm.ContentBlock
+					var toolCalls []llm.ToolCall
+
 					for _, part := range candidate.Content.Parts {
 						if part.Text != "" {
 							if part.Thought {
@@ -120,11 +164,30 @@ func (g *GeminiClient) StreamChat(ctx context.Context, messages []llm.Message) (
 								})
 							}
 						}
+
+						if part.FunctionCall != nil {
+							// 工具調用
+							argsB, _ := json.Marshal(part.FunctionCall.Args)
+							toolCalls = append(toolCalls, llm.ToolCall{
+								ID:   "", // Gemini 串流中 ID 有時不在此處
+								Name: part.FunctionCall.Name,
+								Function: llm.FunctionCall{
+									Name:      part.FunctionCall.Name,
+									Arguments: string(argsB),
+								},
+								// 保存完整的 FunctionCall 以便後續重建（包含 thought_signature 等隱藏欄位）
+								Meta: map[string]any{
+									"gemini_function_call": part.FunctionCall,
+								},
+							})
+							log.Printf("[Gemini] 🛠️ Tool Call: %s(%s)", part.FunctionCall.Name, string(argsB))
+						}
 					}
 
-					if len(blocks) > 0 {
+					if len(blocks) > 0 || len(toolCalls) > 0 {
 						chunkCh <- llm.StreamChunk{
 							ContentBlocks: blocks,
+							ToolCalls:     toolCalls,
 						}
 					}
 				}
@@ -175,7 +238,48 @@ func (g *GeminiClient) convertMessages(messages []llm.Message) ([]*genai.Content
 			role = "model"
 		}
 
+		if msg.Role == "tool" {
+			role = "user" // Gemini 中工具結果是 user role 的一部分
+			genaiContents = append(genaiContents, &genai.Content{
+				Role: role,
+				Parts: []*genai.Part{
+					{
+						FunctionResponse: &genai.FunctionResponse{
+							Name:     msg.Role, // 其實應該是工具名稱，這裡暫時簡化
+							Response: map[string]any{"result": msg.Content[0].Text},
+						},
+					},
+				},
+			})
+			continue
+		}
+
 		var parts []*genai.Part
+		// 先檢查是否有舊的 ToolCall (如果有，Gemini 需要回傳對應的 FunctionCall)
+		if len(msg.ToolCalls) > 0 {
+			for _, tc := range msg.ToolCalls {
+				// 優先使用保存的原始 FunctionCall（包含 thought_signature）
+				if tc.Meta != nil {
+					if originalFC, ok := tc.Meta["gemini_function_call"].(*genai.FunctionCall); ok {
+						parts = append(parts, &genai.Part{
+							FunctionCall: originalFC,
+						})
+						continue
+					}
+				}
+
+				// 如果沒有保存的原始資料，則手動重建（可能會缺少 thought_signature）
+				var args map[string]any
+				json.Unmarshal([]byte(tc.Function.Arguments), &args)
+				parts = append(parts, &genai.Part{
+					FunctionCall: &genai.FunctionCall{
+						Name: tc.Function.Name,
+						Args: args,
+					},
+				})
+			}
+		}
+
 		for _, block := range msg.Content {
 			switch block.Type {
 			case "text":

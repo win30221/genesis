@@ -66,10 +66,11 @@ func LogUsage(model string, usage *LLMUsage) {
 
 // LLMClient 通用 LLM 客戶端介面
 type LLMClient interface {
+	// Provider 返回提供者名稱 (例如 "gemini", "ollama")
+	Provider() string
+
 	// StreamChat 流式對話，返回 StreamChunk channel
-	// messages: 對話歷史（使用 llm.Message 結構）
-	// 返回值: StreamChunk channel（增量式內容 + 最終用量統計）
-	StreamChat(ctx context.Context, messages []Message) (<-chan StreamChunk, error)
+	StreamChat(ctx context.Context, messages []Message, availableTools any) (<-chan StreamChunk, error)
 
 	// IsTransientError 判斷是否為暫時性錯誤 (如 503, Rate Limit)
 	IsTransientError(err error) bool
@@ -82,7 +83,7 @@ type FallbackClient struct {
 	RetryDelay time.Duration
 }
 
-func (f *FallbackClient) StreamChat(ctx context.Context, messages []Message) (<-chan StreamChunk, error) {
+func (f *FallbackClient) StreamChat(ctx context.Context, messages []Message, availableTools any) (<-chan StreamChunk, error) {
 	var lastErr error
 	for i, client := range f.Clients {
 		if i > 0 {
@@ -106,7 +107,7 @@ func (f *FallbackClient) StreamChat(ctx context.Context, messages []Message) (<-
 				}
 			}
 
-			ch, err := client.StreamChat(ctx, messages)
+			ch, err := client.StreamChat(ctx, messages, availableTools)
 			if err == nil {
 				return ch, nil
 			}
@@ -115,7 +116,7 @@ func (f *FallbackClient) StreamChat(ctx context.Context, messages []Message) (<-
 
 			// Check if the error is transient using the client's implementation
 			if client.IsTransientError(err) && retry < maxRetries {
-				log.Printf("❌ Provider #%d failed with transient error: %v. Retrying...", i+1, err)
+				// log.Printf("❌ Provider #%d failed with transient error: %v. Retrying...", i+1, err)
 				continue
 			}
 
@@ -125,6 +126,13 @@ func (f *FallbackClient) StreamChat(ctx context.Context, messages []Message) (<-
 		}
 	}
 	return nil, fmt.Errorf("all fallback providers failed. Last error: %v", lastErr)
+}
+
+func (f *FallbackClient) Provider() string {
+	if len(f.Clients) > 0 {
+		return f.Clients[0].Provider()
+	}
+	return "fallback"
 }
 
 // IsTransientError 實作 LLMClient 介面

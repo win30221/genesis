@@ -6,25 +6,38 @@ import (
 	"genesis/pkg/config"
 	"genesis/pkg/gateway"
 	"genesis/pkg/llm"
+	"genesis/pkg/tools"    // Added
+	"genesis/pkg/tools/os" // Added
 	"log"
+	"strings"
 	"time"
+
+	jsoniter "github.com/json-iterator/go" // Added
 )
+
+var json = jsoniter.ConfigCompatibleWithStandardLibrary
 
 // ChatHandler 負責管理單次對話的處理流程與狀態
 type ChatHandler struct {
-	client  llm.LLMClient
-	gw      *gateway.GatewayManager
-	history *llm.ChatHistory
-	config  *config.Config
+	client       llm.LLMClient
+	gw           *gateway.GatewayManager
+	history      *llm.ChatHistory
+	config       *config.Config
+	toolRegistry *tools.ToolRegistry // 新增
 }
 
 // NewMessageHandler 建立並初始化 ChatHandler
 func NewMessageHandler(client llm.LLMClient, gw *gateway.GatewayManager, cfg *config.Config, history *llm.ChatHistory) func(*gateway.UnifiedMessage) {
+	tr := tools.NewToolRegistry()
+	// 在此註冊工具
+	tr.Register(tools.NewOSTool(os.NewOSWorker()))
+
 	h := &ChatHandler{
-		client:  client,
-		gw:      gw,
-		history: history,
-		config:  cfg,
+		client:       client,
+		gw:           gw,
+		history:      history,
+		config:       cfg,
+		toolRegistry: tr,
 	}
 
 	h.initializeHistory()
@@ -42,6 +55,13 @@ func (h *ChatHandler) initializeHistory() {
 // OnMessage 處理接收到的使用者訊息 (核心入口)
 func (h *ChatHandler) OnMessage(msg *gateway.UnifiedMessage) {
 	log.Printf("📩 Msg from [%s] %s: %s (files: %d)\n", msg.Session.ChannelID, msg.Session.Username, msg.Content, len(msg.Files))
+
+	// --- 新增：人機直接指令介面 (Slash Commands) ---
+	// 測試指令不應加入歷史訊息，因此在此直接處理並回傳
+	if strings.HasPrefix(msg.Content, "/") {
+		h.handleSlashCommand(msg)
+		return
+	}
 
 	// 1. 建立使用者訊息（支援多模態）
 	userMsg := llm.Message{
@@ -86,7 +106,20 @@ func (h *ChatHandler) processLLMStream(msg *gateway.UnifiedMessage) llm.Message 
 		thinkingSent = true
 	})
 
-	chunkCh, err := h.client.StreamChat(ctx, h.history.GetMessages())
+	// 選擇正確的工具格式
+	var availableTools any
+	pName := h.client.Provider()
+	// log.Printf("[Handler] 🛠️ Current Provider: %s", pName)
+	switch pName {
+	case "gemini":
+		availableTools = h.toolRegistry.ToGeminiFormat()
+	case "ollama":
+		availableTools = h.toolRegistry.ToOllamaFormat()
+	default:
+		log.Printf("[Handler] ⚠️ Unknown provider format for: %s", pName)
+	}
+
+	chunkCh, err := h.client.StreamChat(ctx, h.history.GetMessages(), availableTools)
 	initTimer.Stop()
 
 	if err != nil {
@@ -105,7 +138,63 @@ func (h *ChatHandler) processLLMStream(msg *gateway.UnifiedMessage) llm.Message 
 	defer close(blockCh)
 
 	// 處理 chunks
-	return h.collectChunks(msg.Session, chunkCh, blockCh, thinkingSent)
+	assistantMsg := h.collectChunks(msg.Session, chunkCh, blockCh, thinkingSent)
+
+	// --- 新增：工具執行邏輯 ---
+	if len(assistantMsg.ToolCalls) > 0 {
+		// 儲存助理的 ToolCall 訊息
+		h.history.Add(assistantMsg)
+
+		for _, tc := range assistantMsg.ToolCalls {
+			tool, ok := h.toolRegistry.Get(tc.Name)
+			if !ok {
+				log.Printf("Unknown tool call: %s", tc.Name)
+				continue
+			}
+
+			// 解析參數
+			var args map[string]any
+			if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
+				log.Printf("Failed to parse tool args: %v", err)
+				continue
+			}
+
+			// 執行工具
+			log.Printf("🛠️ Executing tool: %s with args: %+v", tc.Name, args)
+			res, err := tool.Execute(args)
+			if err != nil {
+				log.Printf("Tool execution error: %v", err)
+				continue
+			}
+
+			// 將結果轉為 llm.Message (role: tool)
+			toolResMsg := llm.Message{
+				Role:       "tool",
+				ToolCallID: tc.ID,
+				Content:    []llm.ContentBlock{},
+			}
+			for _, b := range res.Content {
+				if b.Type == "image" {
+					data, _ := tools.Base64Decode(b.Data)
+					toolResMsg.Content = append(toolResMsg.Content, llm.NewImageBlock(data, "image/png"))
+				} else {
+					toolResMsg.Content = append(toolResMsg.Content, llm.NewTextBlock(b.Text))
+				}
+			}
+
+			// Safety net: Ensure content is not empty to prevent LLM errors (e.g. Ollama "unexpected end of JSON")
+			if len(toolResMsg.Content) == 0 {
+				toolResMsg.Content = append(toolResMsg.Content, llm.NewTextBlock("(No output)"))
+			}
+
+			h.history.Add(toolResMsg)
+		}
+
+		// 遞迴呼叫 LLM 處理工具結果
+		return h.processLLMStream(msg)
+	}
+
+	return assistantMsg
 }
 
 // collectChunks 負責從 LLM 讀取 StreamChunk 並累積成完整訊息
@@ -143,9 +232,16 @@ func (h *ChatHandler) collectChunks(session gateway.SessionContext, chunkCh <-ch
 		}
 	}
 
+	var toolCalls []llm.ToolCall
+
 	// 第二階段：處理剩餘的 chunks
 	for chunk := range chunkCh {
 		textContent, thinkingContent = h.processChunk(chunk, textContent, thinkingContent, blockCh)
+
+		// 累積 ToolCalls
+		if len(chunk.ToolCalls) > 0 {
+			toolCalls = append(toolCalls, chunk.ToolCalls...)
+		}
 
 		if chunk.IsFinal {
 			break
@@ -154,8 +250,9 @@ func (h *ChatHandler) collectChunks(session gateway.SessionContext, chunkCh <-ch
 
 	// 返回完整訊息（包含 thinking 和 text）
 	msg := llm.Message{
-		Role:    "assistant",
-		Content: []llm.ContentBlock{},
+		Role:      "assistant",
+		Content:   []llm.ContentBlock{},
+		ToolCalls: toolCalls,
 	}
 
 	if thinkingContent != "" {
@@ -188,4 +285,69 @@ func (h *ChatHandler) processChunk(chunk llm.StreamChunk, currentText, currentTh
 	}
 
 	return currentText, currentThinking
+}
+
+// handleSlashCommand 處理手動輸入的指令，格式：/tool_name action {"param": "value"}
+func (h *ChatHandler) handleSlashCommand(msg *gateway.UnifiedMessage) {
+	parts := strings.SplitN(strings.TrimPrefix(msg.Content, "/"), " ", 3)
+	if len(parts) < 2 {
+		h.gw.SendReply(msg.Session, "❌ 格式錯誤。請使用: /[工具名] [動作] [JSON參數(選填)]\n例如: `/os list_desktop` 或 `/os run_command {\"command\":\"dir\"}`")
+		return
+	}
+
+	toolName := parts[0]
+	action := parts[1]
+
+	var params map[string]any
+	if len(parts) > 2 {
+		if err := json.Unmarshal([]byte(parts[2]), &params); err != nil {
+			// 如果不是 JSON，嘗試當作單一字串參數 (針對 run_command 的優化)
+			if (toolName == "os" || toolName == "os_control") && action == "run_command" {
+				params = map[string]any{"command": parts[2]}
+			} else {
+				h.gw.SendReply(msg.Session, fmt.Sprintf("❌ 參數解析失敗: %v", err))
+				return
+			}
+		}
+	} else {
+		params = make(map[string]any)
+	}
+
+	// 建立符合 OSTool 預期的參數結構
+	args := map[string]any{
+		"action": action,
+		"params": params,
+	}
+
+	tool, ok := h.toolRegistry.Get(toolName)
+	if !ok {
+		// 嘗試模糊比對 (例如 os_control)
+		tool, ok = h.toolRegistry.Get(toolName + "_control")
+		if !ok {
+			h.gw.SendReply(msg.Session, fmt.Sprintf("❌ 找不到工具: %s", toolName))
+			return
+		}
+	}
+
+	h.gw.SendReply(msg.Session, fmt.Sprintf("🛠️ 手動執行工具: %s/%s...", toolName, action))
+	res, err := tool.Execute(args)
+	if err != nil {
+		h.gw.SendReply(msg.Session, fmt.Sprintf("❌ 執行出錯: %v", err))
+		return
+	}
+
+	// 發送結果
+	resCh := make(chan llm.ContentBlock, len(res.Content))
+	go func() {
+		defer close(resCh)
+		for _, b := range res.Content {
+			if b.Type == "image" {
+				data, _ := tools.Base64Decode(b.Data)
+				resCh <- llm.NewImageBlock(data, "image/png")
+			} else {
+				resCh <- llm.NewTextBlock(b.Text)
+			}
+		}
+	}()
+	_ = h.gw.StreamReply(msg.Session, resCh)
 }
