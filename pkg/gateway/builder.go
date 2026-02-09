@@ -4,65 +4,67 @@ import (
 	"fmt"
 	"genesis/pkg/config"
 	"genesis/pkg/monitor"
-
-	jsoniter "github.com/json-iterator/go"
 )
 
-// GatewayBuilder 用於建構 GatewayManager
+// GatewayBuilder provides a fluent builder pattern interface for constructing
+// and initializing a GatewayManager with all its necessary dependencies like
+// monitors, configurations, and handler factories.
 type GatewayBuilder struct {
-	gw             *GatewayManager
-	monitor        monitor.Monitor
-	systemConfig   *config.SystemConfig
-	channelConfigs map[string]jsoniter.RawMessage
-	channelLoader  func(*GatewayManager, map[string]jsoniter.RawMessage)
-	handlerFactory func(*GatewayManager) MessageHandler // Handler 工廠函數
+	gw             *GatewayManager                      // The GatewayManager instance being constructed
+	monitor        monitor.Monitor                      // Monitoring implementation to be injected
+	systemConfig   *config.SystemConfig                 // Technical parameters for the gateway
+	channelLoader  func(*GatewayManager)                // Function responsible for loading and registering channels
+	handlerFactory func(*GatewayManager) MessageHandler // Factory function to create the core message handler
 }
 
-// NewGatewayBuilder 建立一個新的 GatewayBuilder
+// NewGatewayBuilder creates a fresh GatewayBuilder instance and allocates
+// an internal GatewayManager to be configured.
 func NewGatewayBuilder() *GatewayBuilder {
 	return &GatewayBuilder{
 		gw: NewGatewayManager(),
 	}
 }
 
-// WithMonitor 設定監控器
+// WithMonitor injects a monitoring implementation into the builder.
+// This monitor will be started automatically during the Build() process.
 func (b *GatewayBuilder) WithMonitor(m monitor.Monitor) *GatewayBuilder {
 	b.monitor = m
 	return b
 }
 
-// WithSystemConfig 設定系統配置
+// WithSystemConfig provides engine-level technical parameters to the builder,
+// which are used to set up internal buffers and other system behaviors.
 func (b *GatewayBuilder) WithSystemConfig(cfg *config.SystemConfig) *GatewayBuilder {
 	b.systemConfig = cfg
 	return b
 }
 
-// WithChannelConfigs 設定 Channel 配置
-func (b *GatewayBuilder) WithChannelConfigs(configs map[string]jsoniter.RawMessage) *GatewayBuilder {
-	b.channelConfigs = configs
-	return b
-}
-
-// WithChannelLoader 設定 Channel 載入函數
-func (b *GatewayBuilder) WithChannelLoader(loader func(*GatewayManager, map[string]jsoniter.RawMessage)) *GatewayBuilder {
+// WithChannelLoader injects a loader function that knows how to instantiate
+// and register specific Channel implementations. The loader captures all
+// required dependencies (configs, history, etc.) via closure.
+func (b *GatewayBuilder) WithChannelLoader(loader func(*GatewayManager)) *GatewayBuilder {
 	b.channelLoader = loader
 	return b
 }
 
-// WithHandlerFactory 設定 Handler 工廠函數（接受 Gateway 引用並返回 MessageHandler）
+// WithHandlerFactory provides a factory function that creates the core
+// MessageHandler (tipically ChatHandler.OnMessage) by passing the fully
+// configured GatewayManager reference.
 func (b *GatewayBuilder) WithHandlerFactory(factory func(*GatewayManager) MessageHandler) *GatewayBuilder {
 	b.handlerFactory = factory
 	return b
 }
 
-// Build 建構並啟動 Gateway
+// Build finalizes the configuration, injects all dependencies into the
+// GatewayManager, starts the monitor and all registered channels.
+// Returns the fully operational GatewayManager or an error if any stage fails.
 func (b *GatewayBuilder) Build() (*GatewayManager, error) {
-	// 0. 設定系統層級參數
+	// 0. Extract and apply system-level parameters (like buffer sizes)
 	if b.systemConfig != nil {
 		b.gw.SetChannelBuffer(b.systemConfig.InternalChannelBuffer)
 	}
 
-	// 1. 設定監控器
+	// 1. Initialize and start the monitoring service
 	if b.monitor != nil {
 		b.gw.SetMonitor(b.monitor)
 		if err := b.monitor.Start(); err != nil {
@@ -70,18 +72,18 @@ func (b *GatewayBuilder) Build() (*GatewayManager, error) {
 		}
 	}
 
-	// 2. 載入 Channels
-	if b.channelConfigs != nil && b.channelLoader != nil {
-		b.channelLoader(b.gw, b.channelConfigs)
+	// 2. Load and register communication channels using the provided loader
+	if b.channelLoader != nil {
+		b.channelLoader(b.gw)
 	}
 
-	// 3. 設定訊息處理器（使用工廠函數建立，傳入 Gateway 引用）
+	// 3. Instantiate and bind the core message handler
 	if b.handlerFactory != nil {
 		handler := b.handlerFactory(b.gw)
 		b.gw.SetMessageHandler(handler)
 	}
 
-	// 4. 啟動所有 Channels
+	// 4. Trigger the startup sequence for all successfully registered channels
 	if err := b.gw.StartAll(); err != nil {
 		return nil, fmt.Errorf("failed to start channels: %w", err)
 	}

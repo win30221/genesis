@@ -3,57 +3,50 @@ package main
 import (
 	"context"
 	"genesis/pkg/channels"
-	_ "genesis/pkg/channels/autoload" // 自動註冊 Channels
+	_ "genesis/pkg/channels/autoload" // Auto-register Channels
 	"genesis/pkg/config"
 	"genesis/pkg/gateway"
 	"genesis/pkg/handler"
 	"genesis/pkg/llm"
-	_ "genesis/pkg/llm/autoload" // 自動註冊 LLM Providers
+	_ "genesis/pkg/llm/autoload" // Auto-register LLM Providers
 	"genesis/pkg/monitor"
 	"log"
-	"os"
 	"os/signal"
 	"syscall"
-
-	jsoniter "github.com/json-iterator/go"
 )
 
-var json = jsoniter.ConfigCompatibleWithStandardLibrary
-
 func main() {
-	// 啟動監控環境
-	monitor.Startup()
+	// --- 0. Setup Environment ---
+	// Initialize logging, banner, and get the monitor instance
+	m := monitor.SetupEnvironment()
 
 	log.Println("==========================================")
 
-	// --- 0. 讀取設定檔 ---
-	cfg, err := config.Load("config.json")
+	// --- 1. Load Configuration ---
+	cfg, sysCfg, err := config.Load()
 	if err != nil {
-		log.Printf("⚠️ Warning: Failed to load config.json: %v\n", err)
-		log.Printf("Using default/empty config.\n")
-		cfg = &config.Config{} // Empty config fallback
+		// Fail Fast: mandatory config is missing or invalid
+		log.Fatalf("❌ Critical Error: Failed to load configuration: %v\n", err)
 	}
 
-	// --- 1. LLM 設定 ---
-	client, err := llm.NewFromConfig(cfg.LLM, cfg.System)
+	// --- 2. LLM Setup ---
+	client, err := llm.NewFromConfig(cfg.LLM, sysCfg)
 	if err != nil {
 		log.Fatalf("❌ Failed to init LLM client: %v\n", err)
 	}
 
-	// --- 1a. 歷史紀錄管理 ---
+	// --- 2a. Chat History (State) ---
 	chatHistory := llm.NewChatHistory()
-	// 預先載入系統提示詞作為歷史起點 (可選，這裡我們先讓 Handler 處理)
 
-	// --- 2. Gateway 初始化（使用 Builder 模式）---
+	// --- 3. Gateway Initialization (using Builder pattern) ---
 	gw, err := gateway.NewGatewayBuilder().
-		WithSystemConfig(cfg.System).
-		WithMonitor(monitor.NewCLIMonitor()).
-		WithChannelConfigs(cfg.Channels).
-		WithChannelLoader(func(g *gateway.GatewayManager, configs map[string]jsoniter.RawMessage) {
-			channels.LoadFromConfig(g, configs, chatHistory, cfg.System)
+		WithSystemConfig(sysCfg).
+		WithMonitor(m).
+		WithChannelLoader(func(g *gateway.GatewayManager) {
+			channels.LoadFromConfig(g, cfg.Channels, chatHistory, sysCfg)
 		}).
 		WithHandlerFactory(func(gw *gateway.GatewayManager) gateway.MessageHandler {
-			return handler.NewMessageHandler(client, gw, cfg, chatHistory)
+			return handler.NewMessageHandler(client, gw, cfg, sysCfg, chatHistory)
 		}).
 		Build()
 
@@ -61,19 +54,15 @@ func main() {
 		log.Fatalf("Failed to build gateway: %v\n", err)
 	}
 
-	// 阻塞主執行緒
-	_, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	// Create context listening for system signals
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
 
-	// 監聽系統信號
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-
-	// 等待信號
-	<-sigChan
+	// Wait for signal
+	<-ctx.Done()
 	log.Println("\nReceived shutdown signal. Stopping services...")
 
-	// 執行清理
+	// Perform cleanup
 	gw.StopAll()
 	log.Println("Bye!")
 }

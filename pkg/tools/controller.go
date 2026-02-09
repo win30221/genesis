@@ -1,24 +1,28 @@
 package tools
 
-// ActionRequest 代表一個操控請求
+// ActionRequest represents a standardized payload for controlling a plugin or worker.
+// It follows the "Action Dispatching" pattern to decouple the tool definition
+// from the platform-specific execution details.
 type ActionRequest struct {
-	Action string         `json:"action"` // 動作名稱，例如 "click", "screenshot", "run_command"
-	Params map[string]any `json:"params"` // 動作所需的參數
+	Action string         `json:"action"` // Name of the capability to invoke (e.g., "screenshot")
+	Params map[string]any `json:"params"` // Key-value map of parameters required by the action
 }
 
-// ActionResponse 代表動作執行的結果
+// ActionResponse encapsulates the result of an action execution from a Controller.
 type ActionResponse struct {
-	Success bool   `json:"success"`
-	Data    any    `json:"data,omitempty"`
-	Error   string `json:"error,omitempty"`
+	Success bool   `json:"success"`         // Indicates if the action completed without fatal errors
+	Data    any    `json:"data,omitempty"`  // The primary result payload (e.g., image bytes, command output)
+	Error   string `json:"error,omitempty"` // User-friendly error message if Success is false
 }
 
-// Controller 是通用的外掛操控介面
-// 支援跨平台操作，採用「動作分發 (Action Dispatching)」模式
+// Controller is the universal interface for plugin control units (Workers).
+// It abstracts the underlying platform complexity by providing a
+// dispatch-based execution model.
 type Controller interface {
-	// Execute 執行一個指定的動作
+	// Execute dispatches and performs a specified action based on the request.
 	Execute(req ActionRequest) (*ActionResponse, error)
 
-	// Capabilities 返回該控制器支援的所有動作列表
+	// Capabilities returns a listing of all primitive actions (verbs)
+	// supported by this specific controller instance.
 	Capabilities() []string
 }

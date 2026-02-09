@@ -9,13 +9,16 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strings"
 )
 
-// WindowsWorker 實作了 tools.Controller 介面，專注於 Windows 環境的操控
+// WindowsWorker implements the tools.Controller interface specifically for
+// Windows environments. It maintains stateful session data like the
+// current working directory to support sequential shell commands (e.g., 'cd').
 type WindowsWorker struct {
-	workingDir string
+	workingDir string // Tracks the persistent location for command execution context
 }
 
 func NewOSWorker() tools.Controller {
@@ -25,13 +28,16 @@ func NewOSWorker() tools.Controller {
 	}
 }
 
+// Capabilities returns a list of OS-native primitives supported on Windows.
 func (w *WindowsWorker) Capabilities() []string {
 	return []string{
-		"run_command",
-		"screenshot",
+		"run_command", // Execute PowerShell/Shell commands
+		"screenshot",  // Capture primary screen area
 	}
 }
 
+// Execute dispatches the generic ActionRequest to specialized Windows-native
+// implementations like PowerShell runners or GDI+ screen capture routines.
 func (w *WindowsWorker) Execute(req tools.ActionRequest) (*tools.ActionResponse, error) {
 	switch req.Action {
 	case "run_command":
@@ -57,17 +63,25 @@ func (w *WindowsWorker) Execute(req tools.ActionRequest) (*tools.ActionResponse,
 	}
 }
 
+// runCommand executes a string-based shell command via PowerShell.
+// It manages environment variable expansion (converting %VAR% to $env:VAR)
+// and handles UTF-8 encoding synchronization between Go and PowerShell.
+//
+// Key features:
+// - Stateful: Appends a PWD command to track directory changes (e.g., after 'cd').
+// - Resilient: Merges Stdout and Stderr for comprehensive logging.
+// - Transparent: Strips the internal PWD metadata from the output before returning.
 func (w *WindowsWorker) runCommand(cmdStr string) (string, error) {
-	// 將 %VAR% 轉換為 PowerShell 格式 $env:VAR
+	// Convert %VAR% to PowerShell format $env:VAR
 	re := regexp.MustCompile(`%([^%]+)%`)
 	expandedCmd := re.ReplaceAllString(cmdStr, `$env:$1`)
 
-	// 強制 PowerShell 輸出為 UTF8 並執行核心指令
-	// [Console]::OutputEncoding 影響輸出串流，$OutputEncoding 影響內部位元組轉換
+	// Force PowerShell output to UTF8 and execute the core command
+	// [Console]::OutputEncoding affects the output stream, $OutputEncoding affects internal byte conversion
 	utf8Cmd := "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; $OutputEncoding = [System.Text.Encoding]::UTF8; " + expandedCmd
 
-	// 預設使用 powershell 執行，並在完成後返回目前的目錄 (pwd) 以更新 state
-	// 使用 ; 分隔多個指令
+	// Default to powershell execution, and return current directory (pwd) to update state
+	// Use ; to separate multiple commands
 	fullCmd := fmt.Sprintf("%s; $ExecutionContext.SessionState.Path.CurrentLocation.Path", utf8Cmd)
 
 	log.Printf("[OS/Worker] 💻 Executing in [%s]: %s", w.workingDir, fullCmd)
@@ -82,15 +96,15 @@ func (w *WindowsWorker) runCommand(cmdStr string) (string, error) {
 	output := out.String()
 	lines := strings.Split(strings.TrimSpace(output), "\n")
 	if len(lines) > 0 {
-		// 最後一行應該是新的 PWD
+		// Last line should be the new PWD
 		newCwd := strings.TrimSpace(lines[len(lines)-1])
-		// 驗證路徑是否存在且為目錄
+		// Verify if path exists and is a directory
 		if info, statErr := os.Stat(newCwd); statErr == nil && info.IsDir() {
 			w.workingDir = newCwd
-			// 從輸出中移除最後一行的 PWD 資訊，以免干擾 AI
+			// Remove the PWD info from output to avoid interfering with AI
 			output = strings.Join(lines[:len(lines)-1], "\n")
 
-			// 如果輸出為空（例如 cd 指令），則回傳新的目錄位置，讓 AI 知道環境變更
+			// If output is empty (e.g., cd command), return the new directory to inform AI
 			if strings.TrimSpace(output) == "" {
 				output = fmt.Sprintf("Current directory: %s", w.workingDir)
 			}
@@ -100,9 +114,14 @@ func (w *WindowsWorker) runCommand(cmdStr string) (string, error) {
 	return output, err
 }
 
+// takeScreenshot captures the primary display content using the .NET
+// System.Drawing library via a dynamic PowerShell script.
+// It saves the image to a temporary file, reads it into memory as a
+// base64-encoded string, and performs cleanup.
+// This allows cross-process screen capture without external dependencies.
 func (w *WindowsWorker) takeScreenshot() (string, error) {
-	// 使用 PowerShell 腳本擷取螢幕並存入臨時檔案，再讀取為 base64
-	tempFile := "temp_screenshot.png"
+	// Use PowerShell script to capture screen and save to temp file, then read as base64
+	tempFile := filepath.Join(os.TempDir(), "genesis_screenshot.png")
 	psScript := fmt.Sprintf(`
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
@@ -130,6 +149,6 @@ $Bitmap.Dispose()
 		return "", fmt.Errorf("failed to read screenshot file: %w", err)
 	}
 
-	// 返回 Base64 編碼，這能讓 AI 助手（如果支援 Vision）直接解析
+	// Return Base64 encoding, which allows AI assistants (if they support Vision) to parse directly
 	return tools.Base64Encode(data), nil
 }

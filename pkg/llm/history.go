@@ -4,20 +4,23 @@ import (
 	"sync"
 )
 
-// ChatHistory 管理對話歷史，支援滑動窗口 (Sliding Window) 限制長度
+// ChatHistory is a concurrency-safe manager for the linear conversation log.
+// It acts as the "short-term memory" for a single conversation session,
+// accumulating messages from all roles (user, system, assistant, tool).
 type ChatHistory struct {
-	messages []Message
-	mu       sync.RWMutex
+	messages []Message    // In-memory slice of messages in chronological order
+	mu       sync.RWMutex // Read-Write mutex to protect concurrent access from multiple goroutines
 }
 
-// NewChatHistory 建立一個新的歷史管理員
+// NewChatHistory initializes a fresh ChatHistory manager with an empty message set.
 func NewChatHistory() *ChatHistory {
 	return &ChatHistory{
 		messages: make([]Message, 0),
 	}
 }
 
-// Add 加入一則新訊息，若超過長度則移除最舊的
+// Add appends a new Message to the end of the conversation history.
+// This operation is protected by a write lock.
 func (h *ChatHistory) Add(msg Message) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -25,12 +28,15 @@ func (h *ChatHistory) Add(msg Message) {
 	h.messages = append(h.messages, msg)
 }
 
-// GetMessages 取得目前的對話歷史副本
+// GetMessages returns a deep-copy of the current conversation history.
+// By returning a copy, it ensures that callers can safely iterate or
+// manipulate the list without affecting the live history or causing race
+// conditions during subsequent appends.
 func (h *ChatHistory) GetMessages() []Message {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 
-	// 返回副本
+	// Perform a thread-safe copy of the slice
 	cp := make([]Message, len(h.messages))
 	copy(cp, h.messages)
 	return cp

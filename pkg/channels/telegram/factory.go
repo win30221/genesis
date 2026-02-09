@@ -12,11 +12,13 @@ import (
 
 var json = jsoniter.ConfigCompatibleWithStandardLibrary
 
-// TelegramFactory 負責建立 Telegram Channels
+// TelegramFactory implements the channels.ChannelFactory interface to
+// instantiate Telegram-specific communication adapters.
 type TelegramFactory struct{}
 
-// Create 實作 ChannelFactory
-func (f *TelegramFactory) Create(gw *gateway.GatewayManager, rawConfig jsoniter.RawMessage, history *llm.ChatHistory, system *config.SystemConfig) (gateway.Channel, error) {
+// Create parses the channel-specific configuration and initializes a
+// TelegramChannel instance with synchronized system-level timeouts.
+func (f *TelegramFactory) Create(rawConfig jsoniter.RawMessage, history *llm.ChatHistory, system *config.SystemConfig) (gateway.Channel, error) {
 	var tgCfg TelegramConfig
 	if err := json.Unmarshal(rawConfig, &tgCfg); err != nil {
 		return nil, fmt.Errorf("failed to parse telegram config: %w", err)
@@ -26,7 +28,7 @@ func (f *TelegramFactory) Create(gw *gateway.GatewayManager, rawConfig jsoniter.
 		return nil, fmt.Errorf("missing telegram token")
 	}
 
-	return NewTelegramChannel(tgCfg, system.TelegramMessageLimit, system.DownloadTimeoutSec)
+	return NewTelegramChannel(tgCfg, system.TelegramMessageLimit, system.DownloadTimeoutMs)
 }
 
 func init() {

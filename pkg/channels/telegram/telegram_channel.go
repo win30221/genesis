@@ -8,36 +8,43 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
 
-// TelegramConfig 定義 Telegram 相關設定
+// TelegramConfig encapsulates the credentials required to authenticate with
+// the Telegram Bot API.
 type TelegramConfig struct {
-	Token string `json:"token"`
+	Token string `json:"token"` // The secret BOT API string provided by @BotFather
 }
 
-// TelegramChannel 實作 gateway.Channel 介面
+// TelegramChannel is the production implementation of gateway.Channel for
+// the Telegram platform. It handles multi-modal message reception,
+// media group buffering (albums), and fragmented response streaming.
 type TelegramChannel struct {
-	config       TelegramConfig
-	bot          *tgbotapi.BotAPI
-	updates      tgbotapi.UpdatesChannel
-	messageLimit int // Configurable message limit
-	mediaGroups  map[string]*mediaGroupBuffer
-	httpClient   *http.Client
-	mu           sync.Mutex
+	config       TelegramConfig               // Auth credentials
+	bot          *tgbotapi.BotAPI             // Underlying Telegram SDK client
+	updates      tgbotapi.UpdatesChannel      // Stream of incoming events
+	messageLimit int                          // Maximum character count per single message bubble
+	mediaGroups  map[string]*mediaGroupBuffer // Buffer for grouping multiple images sent together
+	httpClient   *http.Client                 // Client for downloading remote media from Telegram
+	mu           sync.Mutex                   // Protects concurrent access to internal buffers
 }
 
+// mediaGroupBuffer aggregates multiple incoming messages marked with the
+// same MediaGroupID into a single UnifiedMessage. This ensures multi-image
+// posts are processed as a single atomic context by the AI.
 type mediaGroupBuffer struct {
-	session  gateway.SessionContext
-	content  string
-	photoIDs []string
-	timer    *time.Timer
+	session  gateway.SessionContext // Target session metadata
+	content  string                 // Aggregated caption text
+	photoIDs []string               // Collection of file identifiers
+	timer    *time.Timer            // Debounce timer for finishing the group
 }
 
-func NewTelegramChannel(cfg TelegramConfig, msgLimit int, timeoutSec int) (*TelegramChannel, error) {
+func NewTelegramChannel(cfg TelegramConfig, msgLimit int, timeoutMs int) (*TelegramChannel, error) {
 	bot, err := tgbotapi.NewBotAPI(cfg.Token)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create telegram bot: %w", err)
@@ -51,15 +58,19 @@ func NewTelegramChannel(cfg TelegramConfig, msgLimit int, timeoutSec int) (*Tele
 		messageLimit: msgLimit,
 		mediaGroups:  make(map[string]*mediaGroupBuffer),
 		httpClient: &http.Client{
-			Timeout: time.Duration(timeoutSec) * time.Second,
+			Timeout: time.Duration(timeoutMs) * time.Millisecond,
 		},
 	}, nil
 }
 
+// ID returns the unique platform identifier "telegram".
 func (t *TelegramChannel) ID() string {
 	return "telegram"
 }
 
+// Start initiates the long-polling update loop in a background goroutine.
+// It maps platform-specific update types (text, photos, albums) into
+// the internal UnifiedMessage format.
 func (t *TelegramChannel) Start(ctx gateway.ChannelContext) error {
 	u := tgbotapi.NewUpdate(0)
 	u.Timeout = 60
@@ -81,7 +92,7 @@ func (t *TelegramChannel) Start(ctx gateway.ChannelContext) error {
 				Username:  update.Message.From.UserName,
 			}
 
-			// 辨識圖片但先不下載，避免阻塞分組邏輯
+			// Identify photos but don't download yet to avoid blocking group logic
 			var photoID string
 			if len(update.Message.Photo) > 0 {
 				photoID = update.Message.Photo[len(update.Message.Photo)-1].FileID
@@ -93,13 +104,13 @@ func (t *TelegramChannel) Start(ctx gateway.ChannelContext) error {
 				content = update.Message.Caption
 			}
 
-			// 處理 MediaGroup (相簿/合集)
+			// Handle MediaGroup (album/collection)
 			if update.Message.MediaGroupID != "" {
 				t.handleMediaGroup(ctx, update.Message.MediaGroupID, session, content, photoID)
 				continue
 			}
 
-			// 一般訊息 (單張圖片或純文字)
+			// Regular message (single image or plain text)
 			var files []gateway.FileAttachment
 			if photoID != "" {
 				if file, err := t.downloadPhoto(photoID); err == nil {
@@ -121,18 +132,32 @@ func (t *TelegramChannel) Start(ctx gateway.ChannelContext) error {
 	return nil
 }
 
-// downloadPhoto 封裝下載邏輯
+// SendSignal implements the gateway.SignalingChannel interface
+func (t *TelegramChannel) SendSignal(session gateway.SessionContext, signal string) error {
+	if signal == "thinking" {
+		chatID, err := strconv.ParseInt(session.ChatID, 10, 64)
+		if err != nil {
+			return err
+		}
+		action := tgbotapi.NewChatAction(chatID, tgbotapi.ChatTyping)
+		_, err = t.bot.Send(action)
+		return err
+	}
+	return nil
+}
+
+// downloadPhoto encapsulates the download logic
 func (t *TelegramChannel) downloadPhoto(fileID string) (*gateway.FileAttachment, error) {
-	// 使用 Telegram API 取得檔案資訊（包含 Path）
+	// Use Telegram API to get file info (contains Path)
 	fileInfo, err := t.bot.GetFile(tgbotapi.FileConfig{FileID: fileID})
 	if err != nil {
 		return nil, fmt.Errorf("failed to get photo file info: %w", err)
 	}
 
-	// 直接從 Token 組合下載 URL，減少一次 GetFileDirectURL 的 API 往返
+	// Combine download URL directly from Token to reduce API round trips
 	fileURL := fileInfo.Link(t.config.Token)
 
-	// 下載內容
+	// Download content
 	resp, err := t.httpClient.Get(fileURL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to download photo: %w", err)
@@ -144,7 +169,7 @@ func (t *TelegramChannel) downloadPhoto(fileID string) (*gateway.FileAttachment,
 		return nil, fmt.Errorf("failed to read photo data: %w", err)
 	}
 
-	// 自動偵測 MIME 類型
+	// Detect MIME type automatically
 	mimeType := http.DetectContentType(data)
 
 	return &gateway.FileAttachment{
@@ -160,7 +185,7 @@ func (t *TelegramChannel) handleMediaGroup(ctx gateway.ChannelContext, groupID s
 
 	buf, ok := t.mediaGroups[groupID]
 	if !ok {
-		// 建立新緩衝區
+		// Create new buffer
 		buf = &mediaGroupBuffer{
 			session:  session,
 			content:  text,
@@ -171,14 +196,14 @@ func (t *TelegramChannel) handleMediaGroup(ctx gateway.ChannelContext, groupID s
 		}
 		t.mediaGroups[groupID] = buf
 
-		// 設定定時器 (1秒後發送，給下載預留空間)
+		// Set timer (send after 1s to allow more incoming media)
 		buf.timer = time.AfterFunc(time.Second, func() {
 			t.mu.Lock()
 			if finalBuf, exists := t.mediaGroups[groupID]; exists {
 				delete(t.mediaGroups, groupID)
 				t.mu.Unlock()
 
-				// 在定時器內「併發」下載所有圖片
+				// Download all photos in parallel
 				var wg sync.WaitGroup
 				files := make([]gateway.FileAttachment, len(finalBuf.photoIDs))
 
@@ -195,7 +220,7 @@ func (t *TelegramChannel) handleMediaGroup(ctx gateway.ChannelContext, groupID s
 				}
 				wg.Wait()
 
-				// 清理下載失敗的空項目
+				// Clean up empty items (failed downloads)
 				var successfulFiles []gateway.FileAttachment
 				for _, f := range files {
 					if f.Data != nil {
@@ -203,7 +228,7 @@ func (t *TelegramChannel) handleMediaGroup(ctx gateway.ChannelContext, groupID s
 					}
 				}
 
-				// 發送到 Gateway
+				// Send to Gateway
 				msg := &gateway.UnifiedMessage{
 					Session: finalBuf.session,
 					Content: finalBuf.content,
@@ -217,7 +242,7 @@ func (t *TelegramChannel) handleMediaGroup(ctx gateway.ChannelContext, groupID s
 			}
 		})
 	} else {
-		// 累積內容與圖片
+		// Accumulate content and photos
 		if text != "" {
 			if buf.content != "" {
 				buf.content += "\n" + text
@@ -229,7 +254,7 @@ func (t *TelegramChannel) handleMediaGroup(ctx gateway.ChannelContext, groupID s
 			buf.photoIDs = append(buf.photoIDs, photoID)
 		}
 
-		// 延長定時器
+		// Reset timer
 		buf.timer.Reset(time.Second)
 	}
 }
@@ -240,7 +265,7 @@ func (t *TelegramChannel) Stop() error {
 }
 
 func (t *TelegramChannel) Send(session gateway.SessionContext, message string) error {
-	// Telegram Chat ID 必須是 int64
+	// Telegram Chat ID must be int64
 	chatID, err := strconv.ParseInt(session.ChatID, 10, 64)
 	if err != nil {
 		return fmt.Errorf("invalid chat id for telegram: %s", session.ChatID)
@@ -250,7 +275,7 @@ func (t *TelegramChannel) Send(session gateway.SessionContext, message string) e
 	totalLen := len(msgRunes)
 
 	if totalLen <= t.messageLimit {
-		// 短訊息直接發送
+		// Send short message directly
 		msg := tgbotapi.NewMessage(chatID, message)
 		if _, err := t.bot.Send(msg); err != nil {
 			return fmt.Errorf("telegram send failed: %w", err)
@@ -258,7 +283,7 @@ func (t *TelegramChannel) Send(session gateway.SessionContext, message string) e
 		return nil
 	}
 
-	// 長訊息分段發送
+	// Send long message in chunks
 	for i := 0; i < totalLen; i += t.messageLimit {
 		end := i + t.messageLimit
 		if end > totalLen {
@@ -274,41 +299,83 @@ func (t *TelegramChannel) Send(session gateway.SessionContext, message string) e
 	return nil
 }
 
-// Stream 實作 gateway.Channel.Stream
-// Telegram 採用累積+分段發送的策略，並將 thinking 和 text 分成兩個獨立訊息
+func (t *TelegramChannel) sendPhoto(session gateway.SessionContext, block llm.ContentBlock) error {
+	chatID, err := strconv.ParseInt(session.ChatID, 10, 64)
+	if err != nil {
+		return err
+	}
+
+	if block.Source == nil {
+		return fmt.Errorf("image source is nil")
+	}
+
+	var photo tgbotapi.Chattable
+	if block.Source.Type == "base64" && len(block.Source.Data) > 0 {
+		photo = tgbotapi.NewPhoto(chatID, tgbotapi.FileBytes{
+			Name:  "screenshot.png",
+			Bytes: block.Source.Data,
+		})
+	} else if block.Source.Type == "url" {
+		photo = tgbotapi.NewPhoto(chatID, tgbotapi.FileURL(block.Source.URL))
+	} else {
+		return fmt.Errorf("unsupported image source type: %s", block.Source.Type)
+	}
+
+	_, err = t.bot.Send(photo)
+	return err
+}
+
+// Stream implements the streaming response protocol for Telegram.
+// Since Telegram doesn't natively support mid-message streaming updates,
+// this implementation uses an "Accumulation + Buffered Flush" strategy:
+// 1. Thinking blocks are collected and sent as an initial bubble.
+// 2. Text blocks are aggregated until the stream ends or an image/tool occurs.
+// 3. Images are sent immediately as separate messages.
 func (t *TelegramChannel) Stream(session gateway.SessionContext, blocks <-chan llm.ContentBlock) error {
-	var thinkingBuffer string
-	var textBuffer string
+	var thinkingBuf strings.Builder
+	var textBuf strings.Builder
 	var thinkingSent bool
 
 	for block := range blocks {
 		switch block.Type {
 		case "thinking":
-			thinkingBuffer += block.Text
+			thinkingBuf.WriteString(block.Text)
 		case "text", "error":
-			// 當收到第一個文字塊時，如果思考內容還沒發送，先發送思考內容
-			if (block.Type == "text" || block.Type == "error") && thinkingBuffer != "" && !thinkingSent {
-				thinkingMsg := "💭 思考過程：\n\n" + thinkingBuffer
+			// Send thinking buffer when the first text block arrives if not already sent
+			if thinkingBuf.Len() > 0 && !thinkingSent {
+				thinkingMsg := "💭 Reasoning process:\n\n" + thinkingBuf.String()
 				if err := t.Send(session, thinkingMsg); err != nil {
 					log.Printf("❌ Failed to send thinking message: %v", err)
 				}
 				thinkingSent = true
 			}
-			textBuffer += block.Text
+			textBuf.WriteString(block.Text)
+		case "image":
+			// Send current text buffer first to maintain order
+			if textBuf.Len() > 0 {
+				replyMsg := "🤖 Assistant response:\n\n" + textBuf.String()
+				if err := t.Send(session, replyMsg); err != nil {
+					log.Printf("❌ Failed to send buffered text before image: %v", err)
+				}
+				textBuf.Reset()
+			}
+			if err := t.sendPhoto(session, block); err != nil {
+				log.Printf("❌ Failed to send photo in stream: %v", err)
+			}
 		}
 	}
 
-	// 先發送思考過程（如果迴圈結束還沒發過，例如只有思考或結束太快）
-	if thinkingBuffer != "" && !thinkingSent {
-		thinkingMsg := "💭 思考過程：\n\n" + thinkingBuffer
+	// Send thinking process if the loop ends and it hasn't been sent yet
+	if thinkingBuf.Len() > 0 && !thinkingSent {
+		thinkingMsg := "💭 Reasoning process:\n\n" + thinkingBuf.String()
 		if err := t.Send(session, thinkingMsg); err != nil {
 			log.Printf("❌ Failed to send thinking message: %v", err)
 		}
 	}
 
-	// 再發送回覆內容（如果有）
-	if textBuffer != "" {
-		replyMsg := "🤖 回答內容：\n\n" + textBuffer
+	// Send assistant response (if any)
+	if textBuf.Len() > 0 {
+		replyMsg := "🤖 Assistant response:\n\n" + textBuf.String()
 		return t.Send(session, replyMsg)
 	}
 

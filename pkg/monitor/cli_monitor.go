@@ -6,19 +6,20 @@ import (
 	"os"
 )
 
-// CLIMonitor 實作 Monitor 介面，在終端機顯示所有通道的訊息
+// CLIMonitor implements the Monitor interface, providing a direct
+// terminal-based visualization of messages flowing through all channels.
 type CLIMonitor struct {
-	writer io.Writer
+	writer io.Writer // The output destination, typically os.Stdout.
 }
 
-// NewCLIMonitor 建立一個新的 CLI 監控器
+// NewCLIMonitor creates a new CLI monitor
 func NewCLIMonitor() *CLIMonitor {
 	return &CLIMonitor{
 		writer: os.Stdout,
 	}
 }
 
-// Start 啟動 CLI 監控器
+// Start starts the CLI monitor
 func (m *CLIMonitor) Start() error {
 	fmt.Fprintln(m.writer, "----------------------------------------------------------------")
 	fmt.Fprintln(m.writer, "💬 CLI Monitor Active - All channel messages will appear here")
@@ -26,12 +27,12 @@ func (m *CLIMonitor) Start() error {
 	return nil
 }
 
-// Stop 停止 CLI 監控器
+// Stop stops the CLI monitor
 func (m *CLIMonitor) Stop() error {
 	return nil
 }
 
-// OnMessage 接收並顯示監控訊息
+// OnMessage receives and displays a monitoring message
 func (m *CLIMonitor) OnMessage(msg MonitorMessage) {
 	timestamp := msg.Timestamp.Format("2006-01-02 15:04:05")
 
@@ -42,6 +43,6 @@ func (m *CLIMonitor) OnMessage(msg MonitorMessage) {
 		displayMsg = fmt.Sprintf("[%s/%s] %s", msg.ChannelID, msg.Username, msg.Content)
 	}
 
-	// 使用灰色顯示時間戳
+	// Use gray color for timestamp
 	fmt.Fprintf(m.writer, "\033[90m[%s]\033[0m %s\n", timestamp, displayMsg)
 }

@@ -6,5 +6,8 @@
     "internal_channel_buffer": 100,
     "thinking_init_delay_ms": 500,
     "thinking_token_delay_ms": 200,
-    "telegram_message_limit": 4000
+    "telegram_message_limit": 4000,
+    "show_thinking": true,
+    "debug_chunks": false,
+    "enable_tools": true
 }

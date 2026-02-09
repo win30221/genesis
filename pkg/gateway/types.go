@@ -2,54 +2,71 @@ package gateway
 
 import "genesis/pkg/llm"
 
-// Channel 定義通訊管道的生命週期介面
-// 每個通訊方式 (web, telegram, line) 都必須實作此介面
+// Channel defines the standardized lifecycle interface for communication platforms.
+// Every specific adaptation (e.g., Web, Telegram, Line) must implement this
+// interface to integrate into the Genesis message routing ecosystem.
 type Channel interface {
-	// ID 返回該 Channel 的唯一識別碼 (e.g., "web", "telegram")
+	// ID returns a unique string identifier for this specific channel instance
+	// (e.g., "web", "telegram-bot-alpha").
 	ID() string
-	// Start 啟動接收訊息的 Loop。此方法應該是非阻塞的 (但在某些實作如 CLI 可能需要阻塞，需由 Manager 協調)
-	// 當收到訊息時，應調用 ChannelContext.OnMessage
+	// Start initiates the message receiving loop or webhook listener.
+	// This method must be non-blocking (asynchronous) to allow the manager
+	// to start multiple channels in sequence.
 	Start(ctx ChannelContext) error
-	// Stop 停止接收
+	// Stop gracefully shuts down the channel and releases any held resources
+	// like network ports or long-polling workers.
 	Stop() error
-	// Send 主動發送訊息給特定的 Session
+	// Send transmits a plain text message proactively to a specific session.
 	Send(session SessionContext, message string) error
-	// Stream 流式發送 ContentBlock
+	// Stream sends multiple ContentBlocks (text, thinking, images) in a
+	// streaming manner to a specific session.
 	Stream(session SessionContext, blocks <-chan llm.ContentBlock) error
 }
 
-// SignalingChannel 是一個選用的介面，若 Channel 支援控制信號 (如 thinking)，則實作此介面
+// SignalingChannel is an optional extension of the Channel interface for
+// platforms that support control signals (e.g., typing indicators, thinking UI).
 type SignalingChannel interface {
 	Channel
-	// SendSignal 發送一個控制信號
+	// SendSignal transmits a control signal (e.g., "thinking", "role:system")
+	// to the target session to change UI state or metadata.
 	SendSignal(session SessionContext, signal string) error
 }
 
-// ChannelContext 提供 Channel 與 Gateway 核心互動的介面
+// ChannelContext provides the interface for a Channel implementation to
+// communicate back with the Gateway core.
 type ChannelContext interface {
-	// OnMessage 當 Channel 收到外部訊息時呼叫此方法
+	// OnMessage is the callback invoked when a Channel receives an external
+	// message. It standardizes the data into a UnifiedMessage for the core.
 	OnMessage(channelID string, msg *UnifiedMessage)
 }
 
-// UnifiedMessage 定義標準化的內部訊息格式
+// UnifiedMessage defines the standardized internal data structure for all
+// incoming and outgoing messages within the Genesis system.
+// It serves as a translation layer between platform-specific payloads and
+// the universal LLM processing logic.
 type UnifiedMessage struct {
-	Session SessionContext   // 來源 Session 資訊
-	Content string           // 文字內容
-	Files   []FileAttachment // 附加檔案（圖片等）
-	Raw     any              // 原始 Payload (選用)
+	Session       SessionContext   // Contextual information about the source (User, Chat)
+	Content       string           // Standardized text content of the message
+	Files         []FileAttachment // List of file attachments like images or documents
+	Raw           any              // Optional storage for the original platform-specific payload object
+	RetryCount    int              // Counter for automatic recovery attempts during stream failures
+	ContinueCount int              // Counter for content continuation calls (handling length limits)
+	NoTools       bool             // Virtual flag to disable tool calling for specific requests
+	DebugID       string           // Unique identifier for grouping agentic loop logs for this request
 }
 
-// FileAttachment 表示上傳的檔案
+// FileAttachment represents a single file or binary object uploaded by a user.
 type FileAttachment struct {
-	Filename string // 檔案名稱
-	MimeType string // MIME 類型 (e.g., "image/jpeg", "image/png")
-	Data     []byte // 檔案原始資料
+	Filename string // Original name of the uploaded file
+	MimeType string // MIME type descriptor (e.g., "image/jpeg", "application/pdf")
+	Data     []byte // Raw binary content of the file
 }
 
-// SessionContext 定義訊息的來源上下文，用於路由與辨識使用者
+// SessionContext encapsulates identity and routing information for a specific
+// conversation unit on a specific communication channel.
 type SessionContext struct {
-	ChannelID string // 來源 Channel ID
-	UserID    string // 該平台上的 User ID
-	ChatID    string // 該平台上的 Chat/Group ID (若為私訊則可能同 UserID)
-	Username  string // 使用者名稱 Display Name
+	ChannelID string // Identifier of the channel that originated the session (e.g., "telegram")
+	UserID    string // Platform-specific unique identifier for the user
+	ChatID    string // Platform-specific identifier for the chat or group (may match UserID for DMs)
+	Username  string // Display name or nickname of the user as provided by the platform
 }

@@ -10,7 +10,23 @@ import (
 	jsoniter "github.com/json-iterator/go"
 )
 
-// NewFromConfig 根據設定檔建立 LLM Client
+// NewFromConfig acts as a universal entry point for instantiating an LLM terminal
+// client from raw JSON configuration. It automatically detects provider types,
+// validates credentials, and applies engine-level technical parameters.
+//
+// Logic Flow:
+//  1. Unmarshals raw JSON into a slice of ProviderGroupConfig.
+//  2. Iterates through each group and retrieves the matching ProviderFactory from global registry.
+//  3. Creates one or more atomic LLMClients (one per model/key combination) per group.
+//  4. If multiple atomic clients are initialized, it wraps them into a single
+//     FallbackClient with automatic retry and failover logic.
+//
+// Parameters:
+//   - rawLLM: The raw "llm" section from the app config.
+//   - system: System-level technical parameters (timeouts, retries).
+//
+// Returns:
+//   - A single LLMClient (atomic or fallback) ready for use.
 func NewFromConfig(rawLLM jsoniter.RawMessage, system *config.SystemConfig) (LLMClient, error) {
 	var allAtomicClients []LLMClient
 
@@ -19,7 +35,7 @@ func NewFromConfig(rawLLM jsoniter.RawMessage, system *config.SystemConfig) (LLM
 	}
 
 	var groups []ProviderGroupConfig
-	if err := json.Unmarshal(rawLLM, &groups); err != nil {
+	if err := jsoniter.Unmarshal(rawLLM, &groups); err != nil {
 		return nil, fmt.Errorf("failed to parse 'llm' config: %v", err)
 	}
 
@@ -28,13 +44,13 @@ func NewFromConfig(rawLLM jsoniter.RawMessage, system *config.SystemConfig) (LLM
 
 		factory, ok := GetProviderFactory(group.Type)
 		if !ok {
-			log.Printf("⚠️ Unknown provider type: %s", group.Type)
+			log.Printf("Unknown provider type: %s", group.Type)
 			continue
 		}
 
 		clients, err := factory.Create(group, system)
 		if err != nil {
-			log.Printf("⚠️ Failed to create clients for %s: %v", group.Type, err)
+			log.Printf("Failed to create clients for %s: %v", group.Type, err)
 			continue
 		}
 
@@ -47,12 +63,12 @@ func NewFromConfig(rawLLM jsoniter.RawMessage, system *config.SystemConfig) (LLM
 
 	log.Printf("✅ Total atomic LLM clients initialized: %d", len(allAtomicClients))
 
-	// 如果只有一個，直接回傳
+	// If only one, return it directly
 	if len(allAtomicClients) == 1 {
 		return allAtomicClients[0], nil
 	}
 
-	// 否則包裹在 FallbackClient 中，並代入系統層級的重試設定
+	// Otherwise wrap in a FallbackClient with system-level retry settings
 	return &FallbackClient{
 		Clients:    allAtomicClients,
 		MaxRetries: system.MaxRetries,

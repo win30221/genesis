@@ -49,16 +49,14 @@ func (sc *SafeConn) WriteMessage(messageType int, data []byte) error {
 type WebChannel struct {
 	config      WebConfig
 	server      *http.Server
-	gw          *gateway.GatewayManager
 	history     *llm.ChatHistory     // Shared history
 	connections map[string]*SafeConn // Map UserID -> WS Connection
 	mu          sync.RWMutex
 }
 
-func NewWebChannel(cfg WebConfig, gw *gateway.GatewayManager, history *llm.ChatHistory) *WebChannel {
+func NewWebChannel(cfg WebConfig, history *llm.ChatHistory) *WebChannel {
 	return &WebChannel{
 		config:      cfg,
-		gw:          gw,
 		history:     history,
 		connections: make(map[string]*SafeConn),
 	}
@@ -110,7 +108,7 @@ func (c *WebChannel) Send(session gateway.SessionContext, message string) error 
 	return conn.WriteMessage(websocket.TextMessage, []byte(message))
 }
 
-// SendSignal 實作 gateway.SignalingChannel 介面
+// SendSignal implements the gateway.SignalingChannel interface
 func (c *WebChannel) SendSignal(session gateway.SessionContext, signal string) error {
 	c.mu.RLock()
 	conn, ok := c.connections[session.UserID]
@@ -124,11 +122,14 @@ func (c *WebChannel) SendSignal(session gateway.SessionContext, signal string) e
 		"type":  "signal",
 		"value": signal,
 	}
-	jsonData, _ := json.Marshal(msg)
+	jsonData, err := json.Marshal(msg)
+	if err != nil {
+		return fmt.Errorf("failed to marshal signal: %w", err)
+	}
 	return conn.WriteMessage(websocket.TextMessage, jsonData)
 }
 
-// Stream 實作 gateway.Channel.Stream
+// Stream implements gateway.Channel.Stream
 func (c *WebChannel) Stream(session gateway.SessionContext, blocks <-chan llm.ContentBlock) error {
 	c.mu.RLock()
 	conn, ok := c.connections[session.UserID]
@@ -139,21 +140,36 @@ func (c *WebChannel) Stream(session gateway.SessionContext, blocks <-chan llm.Co
 	}
 
 	for block := range blocks {
-		// 轉換為 JSON 結構
-		msg := map[string]string{
+		// Convert to JSON structure
+		msg := map[string]interface{}{
 			"type": block.Type,
-			"text": block.Text,
 		}
-		jsonData, _ := json.Marshal(msg)
 
-		// 直接發送 JSON
-		err := conn.WriteMessage(websocket.TextMessage, jsonData)
+		if block.Type == "image" && block.Source != nil {
+			if block.Source.Type == "base64" && len(block.Source.Data) > 0 {
+				msg["data"] = base64.StdEncoding.EncodeToString(block.Source.Data)
+				msg["mime"] = block.Source.MediaType
+			} else if block.Source.Type == "url" {
+				msg["url"] = block.Source.URL
+			}
+		} else {
+			msg["text"] = block.Text
+		}
+
+		jsonData, err := json.Marshal(msg)
+		if err != nil {
+			log.Printf("❌ Failed to marshal stream block: %v", err)
+			continue
+		}
+
+		// Send JSON directly
+		err = conn.WriteMessage(websocket.TextMessage, jsonData)
 		if err != nil {
 			return err
 		}
 	}
 
-	// 發送結束標記
+	// Send finish flag
 	return conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"done"}`))
 }
 
@@ -175,15 +191,19 @@ func (c *WebChannel) handleWebSocket(w http.ResponseWriter, r *http.Request, ctx
 	c.connections[userID] = conn
 	c.mu.Unlock()
 
-	// 立即發送歷史紀錄（若有）
+	// Send history immediately (if any)
 	historyMsgs := c.history.GetMessages()
 	if len(historyMsgs) > 0 {
 		historyData := map[string]interface{}{
 			"type": "history",
 			"data": historyMsgs,
 		}
-		historyJSON, _ := json.Marshal(historyData)
-		conn.WriteMessage(websocket.TextMessage, historyJSON)
+		historyJSON, err := json.Marshal(historyData)
+		if err != nil {
+			log.Printf("❌ Failed to marshal history: %v", err)
+		} else {
+			conn.WriteMessage(websocket.TextMessage, historyJSON)
+		}
 	}
 
 	defer func() {
@@ -210,12 +230,12 @@ func (c *WebChannel) handleWebSocket(w http.ResponseWriter, r *http.Request, ctx
 		var content string
 		var files []gateway.FileAttachment
 
-		// 嘗試解析為 JSON (包含圖片)
+		// Try to parse as JSON (includes images)
 		var incoming IncomingMessage
 		if err := json.Unmarshal(msgBytes, &incoming); err == nil {
 			content = incoming.Text
 			for _, img := range incoming.Images {
-				// Base64 解碼
+				// Base64 decode
 				data, err := base64.StdEncoding.DecodeString(img.Data)
 				if err != nil {
 					log.Printf("❌ Failed to decode base64 image %s: %v", img.Name, err)
@@ -230,7 +250,7 @@ func (c *WebChannel) handleWebSocket(w http.ResponseWriter, r *http.Request, ctx
 				log.Printf("📸 Received image: %s (%d bytes)", img.Name, len(data))
 			}
 		} else {
-			// Fallback: 視為純文字 (向下相容)
+			// Fallback: treat as plain text (backward compatibility)
 			content = string(msgBytes)
 		}
 

@@ -11,20 +11,32 @@ import (
 	"strings"
 	"time"
 
+	"os"
+	"path/filepath"
+
+	"io"
+	"regexp"
+
 	jsoniter "github.com/json-iterator/go"
 	"github.com/ollama/ollama/api"
 )
 
 var json = jsoniter.ConfigCompatibleWithStandardLibrary
 
-// OllamaClient Ollama API 客戶端
+// OllamaClient Ollama API client
 type OllamaClient struct {
-	client  *api.Client
-	model   string
-	options map[string]any
+	client       *api.Client
+	model        string
+	options      map[string]any
+	debugEnabled bool
 }
 
-// NewOllamaClient 創建 Ollama 客戶端
+// SetDebug implements the llm.LLMClient interface
+func (o *OllamaClient) SetDebug(enabled bool) {
+	o.debugEnabled = enabled
+}
+
+// NewOllamaClient creates an Ollama client
 func NewOllamaClient(model string, baseURL string, options map[string]any) (*OllamaClient, error) {
 	var client *api.Client
 	var err error
@@ -45,7 +57,7 @@ func NewOllamaClient(model string, baseURL string, options map[string]any) (*Oll
 	}
 
 	customClient := &http.Client{
-		Transport: transport,
+		Transport: &JSONFixingRoundTripper{Proxied: transport},
 		Timeout:   0, // Explicitly no timeout
 	}
 
@@ -57,10 +69,6 @@ func NewOllamaClient(model string, baseURL string, options map[string]any) (*Oll
 		client = api.NewClient(u, customClient)
 	} else {
 		// Even for environment-based, we prefer our custom client if possible
-		// But api.ClientFromEnvironment creates its own client.
-		// If we want to enforce our client, we should try to construct it manually if env vars are simple,
-		// or just use the default fallback if baseURL is empty.
-		// However, most users set baseURL in config.
 		client, err = api.ClientFromEnvironment()
 	}
 
@@ -69,7 +77,6 @@ func NewOllamaClient(model string, baseURL string, options map[string]any) (*Oll
 	}
 
 	log.Printf("✅ [Ollama] Initialized client for %s (BaseURL: %s)", model, baseURL)
-	log.Printf("%+v\n", options)
 
 	return &OllamaClient{
 		client:  client,
@@ -83,10 +90,8 @@ func (o *OllamaClient) Provider() string {
 }
 
 func (o *OllamaClient) StreamChat(ctx context.Context, messages []llm.Message, availableTools any) (<-chan llm.StreamChunk, error) {
-	// 轉換訊息
+	// Convert messages
 	apiMessages := o.convertMessages(messages)
-
-	// log.Printf("[Ollama] 🌊 Tapping model: %s...", o.model)
 
 	chunkCh := make(chan llm.StreamChunk, 100)
 	startResultCh := make(chan error) // Unbuffered to detect if reader is present
@@ -94,7 +99,7 @@ func (o *OllamaClient) StreamChat(ctx context.Context, messages []llm.Message, a
 	go func() {
 		defer close(chunkCh)
 
-		// 轉換工具 (使用 JSON 轉換以避開 SDK 類型不相容問題)
+		// Convert tools (using JSON conversion to work around SDK type mismatch issues)
 		var ollamaTools []api.Tool
 		if availableTools != nil {
 			log.Printf("[Ollama] 🛠️ Converting tools of type: %T", availableTools)
@@ -122,32 +127,56 @@ func (o *OllamaClient) StreamChat(ctx context.Context, messages []llm.Message, a
 		started := false
 		var thoughtsCount int
 
+		// If debug mode is enabled, open file once for the entire stream
+		var debugFile *os.File
+		if o.debugEnabled {
+			debugID, _ := ctx.Value(llm.DebugDirContextKey).(string)
+			if debugID == "" {
+				debugID = time.Now().Format("20060102_150405")
+			}
+			debugDir := filepath.Join("debug", "chunks", "ollama")
+			_ = os.MkdirAll(debugDir, 0755)
+			debugFilePath := filepath.Join(debugDir, fmt.Sprintf("%s.log", debugID))
+			log.Printf("[Ollama] 🛠️ Debug mode ON. Chunks will be appended to: %s", debugFilePath)
+			if f, err := os.OpenFile(debugFilePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644); err == nil {
+				debugFile = f
+				defer debugFile.Close()
+			}
+		}
+		// Track chunks for log preview
+		chunkIdx := 0
+
 		err := o.client.Chat(ctx, req, func(resp api.ChatResponse) error {
-			// 第一個 callback 表示成功
+			chunkIdx++
+			// Save raw packet
+			if debugFile != nil {
+				jsonData, _ := json.Marshal(resp)
+				debugFile.Write(jsonData)
+				debugFile.WriteString("\n")
+			}
+			// First callback indicates success
 			if !started {
 				started = true
-				// 嘗試通知初始化，如果沒人聽(已Timeout)則略過
+				// Notify initialization, skip if no listener (Timeout)
 				select {
 				case startResultCh <- nil:
 				default:
 				}
 			}
 
-			// 處理思考內容
+			// Handle reasoning content
 			if resp.Message.Thinking != "" {
 				thoughtsCount++
 				chunkCh <- llm.NewThinkingChunk(resp.Message.Thinking)
 			}
 
-			// 處理回應內容
+			// Handle response content
 			if resp.Message.Content != "" {
 				chunkCh <- llm.NewTextChunk(resp.Message.Content)
 			}
 
-			// 處理工具調用
+			// Handle tool calls
 			if len(resp.Message.ToolCalls) > 0 {
-				// log.Printf("[Ollama] 🛠️ DEBUG: Raw ToolCalls: %+v", resp.Message.ToolCalls)
-				// log.Printf("[Ollama] 🛠️ Received ToolCalls: %d", len(resp.Message.ToolCalls))
 				var toolCalls []llm.ToolCall
 				for _, tc := range resp.Message.ToolCalls {
 					argsB, err := json.Marshal(tc.Function.Arguments)
@@ -156,7 +185,7 @@ func (o *OllamaClient) StreamChat(ctx context.Context, messages []llm.Message, a
 						argsB = []byte("{}")
 					}
 					toolCalls = append(toolCalls, llm.ToolCall{
-						ID:   tc.ID, // 改為抓取 ID
+						ID:   tc.ID,
 						Name: tc.Function.Name,
 						Function: llm.FunctionCall{
 							Name:      tc.Function.Name,
@@ -170,7 +199,7 @@ func (o *OllamaClient) StreamChat(ctx context.Context, messages []llm.Message, a
 				}
 			}
 
-			// 最後 chunk
+			// Final chunk
 			if resp.Done {
 				usage := &llm.LLMUsage{
 					PromptTokens:     resp.PromptEvalCount,
@@ -180,9 +209,9 @@ func (o *OllamaClient) StreamChat(ctx context.Context, messages []llm.Message, a
 					StopReason:       resp.DoneReason,
 				}
 
-				// 截斷警告 (放在 FinalChunk 之前，且不結束 stream)
+				// Truncation is only logged; Handler manages continuation
 				if resp.DoneReason == "length" {
-					chunkCh <- llm.NewErrorChunk(fmt.Sprintf("Response truncated due to num_predict limit (%v). You might want to increase it in config.", o.options["num_predict"]), false)
+					log.Printf("[Ollama] ⚠️ Response truncated due to length (num_predict).")
 				}
 
 				chunkCh <- llm.NewFinalChunk(resp.DoneReason, usage)
@@ -193,19 +222,18 @@ func (o *OllamaClient) StreamChat(ctx context.Context, messages []llm.Message, a
 		})
 
 		if err != nil {
-			log.Printf("❌ Ollama stream error (%s): %v", o.model, err)
+			log.Printf("❌ Ollama stream error (%s) after %d chunks: %v", o.model, chunkIdx, err)
 			if !started {
-				// 嘗試通知初始化等待者
+				// Notify initialization waiter
 				select {
 				case startResultCh <- err:
-					// 成功發送給等待者
 				default:
-					// 等待者已超時放棄，改發送錯誤訊息給使用者
-					chunkCh <- llm.NewErrorChunk(fmt.Sprintf("Error loading model %s: %v", o.model, err), true)
+					// Waiter timed out, send error message to user instead
+					chunkCh <- llm.NewErrorChunk(fmt.Sprintf("Error loading model %s: %v", o.model, err), err, true)
 				}
 			} else {
-				// Stream 已開始但中途中斷，通知使用者
-				chunkCh <- llm.NewErrorChunk(fmt.Sprintf("Stream interrupted: %v", err), true)
+				// Stream started but interrupted, notify user
+				chunkCh <- llm.NewErrorChunk(fmt.Sprintf("Stream interrupted: %v", err), err, true)
 			}
 		} else if !started {
 			select {
@@ -215,7 +243,7 @@ func (o *OllamaClient) StreamChat(ctx context.Context, messages []llm.Message, a
 		}
 	}()
 
-	// 等待初始化結果
+	// Wait for initialization result
 	select {
 	case err := <-startResultCh:
 		if err != nil {
@@ -227,19 +255,21 @@ func (o *OllamaClient) StreamChat(ctx context.Context, messages []llm.Message, a
 	}
 }
 
+// convertMessages converts messages to Ollama API format
 func (o *OllamaClient) convertMessages(messages []llm.Message) []api.Message {
 	var ollamaMsgs []api.Message
 
 	for _, m := range messages {
-		var content strings.Builder
+		var textContent strings.Builder
+		var thinkingContent strings.Builder
 		var images []api.ImageData
 
 		for _, block := range m.Content {
 			switch block.Type {
-			case "text", "thinking":
-				// thinking 儲存時合併到 content
-				content.WriteString(block.Text)
-
+			case "text":
+				textContent.WriteString(block.Text)
+			case "thinking":
+				thinkingContent.WriteString(block.Text)
 			case "image":
 				if block.Source != nil && len(block.Source.Data) > 0 {
 					images = append(images, block.Source.Data)
@@ -247,23 +277,33 @@ func (o *OllamaClient) convertMessages(messages []llm.Message) []api.Message {
 			}
 		}
 
-		msg := api.Message{
-			Role:    m.Role,
-			Content: content.String(),
+		// Combine content: add separator if both thinking and text exist
+		thinking := thinkingContent.String()
+		text := textContent.String()
+		var combined string
+		if thinking != "" && text != "" {
+			combined = thinking + "\n" + text
+		} else {
+			combined = thinking + text
 		}
 
-		// 處理工具調用（如果是 Assistant 角色且有 ToolCalls）
+		msg := api.Message{
+			Role:    m.Role,
+			Content: combined,
+		}
+
+		// Handle tool calls (if Assistant role and has ToolCalls)
 		if m.Role == "assistant" && len(m.ToolCalls) > 0 {
 			var ollamaToolCalls []api.ToolCall
 			for _, tc := range m.ToolCalls {
-				// 將 JSON 字串轉回 map
+				// Convert JSON string back to map
 				var args map[string]any
 				if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
 					log.Printf("[Ollama] ⚠️ Failed to unmarshal tool arguments for history: %v", err)
 				}
 
-				// 手動建立 api.ToolCall 以確保 Arguments 被正確處理
-				// api.ToolCallFunctionArguments 支持從 map 反序列化
+				// Manually create api.ToolCall to ensure Arguments are handled correctly
+				// api.ToolCallFunctionArguments supports unmarshaling from map
 				argBytes, err := json.Marshal(args)
 				if err != nil {
 					log.Printf("[Ollama] ⚠️ Failed to marshal tool arguments for history: %v, original data: %+v", err, args)
@@ -285,7 +325,7 @@ func (o *OllamaClient) convertMessages(messages []llm.Message) []api.Message {
 			msg.ToolCalls = ollamaToolCalls
 		}
 
-		// 處理工具結果（如果是 Tool 角色）
+		// Handle tool results (if Tool role)
 		if m.Role == "tool" {
 			msg.Role = "tool"
 			msg.ToolCallID = m.ToolCallID
@@ -301,22 +341,72 @@ func (o *OllamaClient) convertMessages(messages []llm.Message) []api.Message {
 	return ollamaMsgs
 }
 
-// IsTransientError 實作 LLMClient 介面
+// IsTransientError implements the llm.LLMClient interface
 func (o *OllamaClient) IsTransientError(err error) bool {
 	if err == nil {
 		return false
 	}
 	errMsg := err.Error()
 
-	// 1. 連線相關錯誤 (Connection refused, reset)
+	// 1. Connection related errors (Connection refused, reset)
 	if strings.Contains(errMsg, "connection refused") || strings.Contains(errMsg, "connection reset") {
 		return true
 	}
 
-	// 2. 負載過重
+	// 2. High load
 	if strings.Contains(strings.ToLower(errMsg), "overloaded") {
 		return true
 	}
 
 	return false
+}
+
+//----------------------------------------------------------------
+// JSONFixingRoundTripper - Interceptor that fixes illegal JSON escapes
+//----------------------------------------------------------------
+
+// JSONFixingRoundTripper intercepts response and fixes illegal escapes (e.g., \$)
+type JSONFixingRoundTripper struct {
+	Proxied http.RoundTripper
+}
+
+func (j *JSONFixingRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	resp, err := j.Proxied.RoundTrip(req)
+	if err != nil {
+		return resp, err
+	}
+
+	// Only filter text-type responses (mainly stream JSON)
+	if strings.Contains(resp.Header.Get("Content-Type"), "application/json") ||
+		strings.Contains(resp.Header.Get("Content-Type"), "application/x-ndjson") {
+		resp.Body = &jsonFixingReadCloser{body: resp.Body}
+	}
+	return resp, nil
+}
+
+type jsonFixingReadCloser struct {
+	body io.ReadCloser
+}
+
+var illegalEscapeRegex = regexp.MustCompile(`\\([^\/\\bfnrtu"])`)
+
+func (j *jsonFixingReadCloser) Read(p []byte) (n int, err error) {
+	n, err = j.body.Read(p)
+	if n > 0 {
+		// Preprocess illegal escapes in the buffer
+		// e.g., convert \$ to $ to avoid JSON parsing failures
+		content := string(p[:n])
+		fixed := illegalEscapeRegex.ReplaceAllString(content, "$1")
+		if len(fixed) < len(content) {
+			// If length decreases, adjust reported n and fill remaining space
+			// Since we only replace single characters (removing backslash), this is safe at the byte array level
+			copy(p, []byte(fixed))
+			n = len(fixed)
+		}
+	}
+	return n, err
+}
+
+func (j *jsonFixingReadCloser) Close() error {
+	return j.body.Close()
 }

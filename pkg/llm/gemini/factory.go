@@ -5,16 +5,16 @@ import (
 	"genesis/pkg/llm"
 )
 
-// GeminiFactory 負責建立 Gemini Clients
+// GeminiFactory handles creation of Gemini Clients
 type GeminiFactory struct{}
 
-// Create 實作 ProviderFactory
+// Create implements ProviderFactory
 func (f *GeminiFactory) Create(cfg llm.ProviderGroupConfig, sys *config.SystemConfig) ([]llm.LLMClient, error) {
 	var clients []llm.LLMClient
 
-	// Cartesian Product: Keys x Models
-	for _, key := range cfg.APIKeys {
-		for _, model := range cfg.Models {
+	// Cartesian Product: Models x Keys (prioritize models)
+	for _, model := range cfg.Models {
+		for _, key := range cfg.APIKeys {
 			client := NewGeminiClient(key, model, cfg.UseThoughtSignature)
 			clients = append(clients, client)
 		}

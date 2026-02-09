@@ -1,30 +1,40 @@
 package tools
 
-// Tool 定義工具介面,類似 OpenClaw 的 AgentTool
+// Tool defines the structural interface for any capability that the AI Agent
+// can execute. It includes metadata for prompt injection (JSON Schema)
+// and the execution logic itself.
 type Tool interface {
+	// Name returns the unique identifier for the tool (e.g., "os_command").
 	Name() string
+	// Description provides a detailed prompt for the LLM to understand when to use the tool.
 	Description() string
-	Parameters() map[string]any   // Properties in JSON Schema
-	RequiredParameters() []string // Required fields in JSON Schema
+	// Parameters returns the JSON Schema "properties" part for the tool's input.
+	Parameters() map[string]any
+	// RequiredParameters returns a list of mandatory field names for the input object.
+	RequiredParameters() []string
+	// Execute performs the actual tool logic using the provided argument map.
 	Execute(args map[string]any) (*ToolResult, error)
 }
 
-// ToolResult 工具執行結果
+// ToolResult encapsulates the outcome of a tool execution.
+// It can contain multiple content blocks (text logs, images) and
+// arbitrary metadata for the handler to process.
 type ToolResult struct {
-	Content []ContentBlock `json:"content"`
-	Details map[string]any `json:"details,omitempty"`
+	Content []ContentBlock `json:"content"`           // Ordered blocks of result data
+	Details map[string]any `json:"details,omitempty"` // Arbitrary technical metadata
 }
 
-// ContentBlock 內容區塊
+// ContentBlock is an atomic data unit within a ToolResult.
+// It is designed to be converted into llm.ContentBlocks by the handler.
 type ContentBlock struct {
-	Type             string `json:"type"` // "text" or "image"
-	Text             string `json:"text,omitempty"`
-	Data             string `json:"data,omitempty"` // base64 for images
-	IsThought        bool   `json:"is_thought,omitempty"`
-	ThoughtSignature []byte `json:"thought_signature,omitempty"`
+	Type             string `json:"type"`                        // Data format: "text" or "image"
+	Text             string `json:"text,omitempty"`              // String content (for text type)
+	Data             string `json:"data,omitempty"`              // Base64 encoded image data (for image type)
+	IsThought        bool   `json:"is_thought,omitempty"`        // Whether this represents internal reasoning (mostly for internal passing)
+	ThoughtSignature []byte `json:"thought_signature,omitempty"` // Cryptographic or provider-specific token signature
 }
 
-// Message 對話訊息
+// Message represents a conversation message
 type Message struct {
 	Role    string             `json:"role"` // "user" or "assistant"
 	Content []ContentBlock     `json:"content"`
@@ -32,7 +42,7 @@ type Message struct {
 	Results []ToolResultWithID `json:"tool_results,omitempty"`
 }
 
-// ToolUse LLM 要求使用工具
+// ToolUse represents a tool use request from LLM
 type ToolUse struct {
 	ID               string         `json:"id"`
 	Name             string         `json:"name"`
@@ -40,7 +50,7 @@ type ToolUse struct {
 	ThoughtSignature []byte         `json:"thought_signature,omitempty"`
 }
 
-// ToolResultWithID 帶 ID 的工具結果
+// ToolResultWithID represents a tool result associated with an ID
 type ToolResultWithID struct {
 	ToolUseID string         `json:"tool_use_id"`
 	ToolName  string         `json:"tool_name"` // Added for Gemini support
@@ -48,35 +58,37 @@ type ToolResultWithID struct {
 	Details   map[string]any `json:"details,omitempty"`
 }
 
-// ToolRegistry 工具註冊表
+// ToolRegistry acts as a central inventory for all tools available to the Agent.
+// It provides helper methods to convert tool schemas into formats compatible
+// with various LLM providers (Gemini, Anthropic, Ollama).
 type ToolRegistry struct {
-	tools map[string]Tool
+	tools map[string]Tool // Internal map of tool name to implementation
 }
 
-// NewToolRegistry 創建工具註冊表
+// NewToolRegistry creates a new tool registry
 func NewToolRegistry() *ToolRegistry {
 	return &ToolRegistry{
 		tools: make(map[string]Tool),
 	}
 }
 
-// Register 註冊工具
+// Register adds a tool to the registry
 func (tr *ToolRegistry) Register(tool Tool) {
 	tr.tools[tool.Name()] = tool
 }
 
-// Unregister 註銷工具
+// Unregister removes a tool from the registry
 func (tr *ToolRegistry) Unregister(name string) {
 	delete(tr.tools, name)
 }
 
-// Get 獲取工具
+// Get retrieves a tool by name
 func (tr *ToolRegistry) Get(name string) (Tool, bool) {
 	tool, ok := tr.tools[name]
 	return tool, ok
 }
 
-// GetAll 獲取所有工具
+// GetAll returns all registered tools
 func (tr *ToolRegistry) GetAll() []Tool {
 	tools := make([]Tool, 0, len(tr.tools))
 	for _, tool := range tr.tools {
@@ -85,7 +97,7 @@ func (tr *ToolRegistry) GetAll() []Tool {
 	return tools
 }
 
-// ToAnthropicFormat 轉換為 Anthropic API 格式
+// ToAnthropicFormat converts to Anthropic API tool format
 func (tr *ToolRegistry) ToAnthropicFormat() []any {
 	tools := make([]any, 0, len(tr.tools))
 	for _, tool := range tr.tools {
@@ -101,7 +113,7 @@ func (tr *ToolRegistry) ToAnthropicFormat() []any {
 	return tools
 }
 
-// ToGeminiFormat 轉換為 Google Gemini API 格式
+// ToGeminiFormat converts to Google Gemini API tool format
 func (tr *ToolRegistry) ToGeminiFormat() any {
 	var fds []map[string]any
 	for _, tool := range tr.tools {
@@ -118,7 +130,7 @@ func (tr *ToolRegistry) ToGeminiFormat() any {
 	return fds
 }
 
-// ToOllamaFormat 轉換為 Ollama (OpenAI-like) API 格式
+// ToOllamaFormat converts to Ollama (OpenAI-compatible) API tool format
 func (tr *ToolRegistry) ToOllamaFormat() []map[string]any {
 	var tools []map[string]any
 	for _, tool := range tr.tools {

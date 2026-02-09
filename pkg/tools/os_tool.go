@@ -3,18 +3,89 @@ package tools
 import (
 	"fmt"
 	"runtime"
+	"sort"
+	"strings"
 )
 
-// OSTool 是一個包裝了 Controller 的 genesis 工具
-type OSTool struct {
-	controller Controller
+// Define constants to avoid Magic Numbers
+const (
+	ActionScreenshot = "screenshot"
+	ActionRunCommand = "run_command"
+)
+
+// ---------- Action Spec ----------
+
+// ActionSpec defines the internal configuration and logic for a specific OS action.
+// It maps high-level tool calls to low-level controller requests and result formatting.
+type ActionSpec struct {
+	Name          string                                             // Machine-readable name of the action
+	Description   string                                             // Human-readable documentation for LLM ingestion
+	ParamSchema   map[string]any                                     // Properties for JSON Schema (tool definition)
+	RequireParams bool                                               // Flag to mandate the presence of the "params" object
+	Validate      func(params map[string]any) error                  // Logic for validating action-specific parameters
+	FormatResult  func(resp *ActionResponse) ([]ContentBlock, error) // Logic to convert controller response to tool blocks
 }
 
-// NewOSTool 建立一個新的 OS 操控工具
+// osActionRegistry contains the definitions for all supported OS-level actions.
+// New actions (e.g., browse, edit_file) can be added here following the ActionSpec pattern.
+var osActionRegistry = map[string]ActionSpec{
+	ActionScreenshot: {
+		Name:          ActionScreenshot,
+		Description:   "Capture a screenshot",
+		RequireParams: false,
+		ParamSchema:   map[string]any{},
+		FormatResult: func(resp *ActionResponse) ([]ContentBlock, error) {
+			b64, ok := resp.Data.(string)
+			if !ok {
+				return nil, fmt.Errorf("unexpected screenshot payload: %T", resp.Data)
+			}
+			return []ContentBlock{
+				{Type: "image", Data: b64},
+			}, nil
+		},
+	},
+	ActionRunCommand: {
+		Name:          ActionRunCommand,
+		Description:   "Execute system shell command",
+		RequireParams: true,
+		ParamSchema: map[string]any{
+			"command": map[string]any{
+				"type":        "string",
+				"description": "Command to execute (e.g., 'dir', 'ls -la')",
+			},
+		},
+		Validate: func(params map[string]any) error {
+			cmd, ok := params["command"].(string)
+			if !ok || cmd == "" {
+				return fmt.Errorf("missing or invalid 'command' parameter")
+			}
+			// TODO: Add command blacklist check here (e.g., rm -rf /)
+			return nil
+		},
+		FormatResult: func(resp *ActionResponse) ([]ContentBlock, error) {
+			val := ""
+			if resp.Data != nil {
+				val = fmt.Sprintf("%v", resp.Data)
+			}
+			return []ContentBlock{
+				{Type: "text", Text: val},
+			}, nil
+		},
+	},
+}
+
+// ---------- Tool ----------
+
+// OSTool implements the tools.Tool interface to expose OS-level capabilities
+// (shell, screenshots) to the AI Agent. It acts as a bridge between the
+// high-level tool registry and a platform-specific low-level Controller.
+type OSTool struct {
+	controller Controller // Primary engine for dispatching low-level actions
+}
+
+// NewOSTool initializes a fresh OSTool instance with a specified controller (worker).
 func NewOSTool(c Controller) *OSTool {
-	return &OSTool{
-		controller: c,
-	}
+	return &OSTool{controller: c}
 }
 
 func (t *OSTool) Name() string {
@@ -22,18 +93,30 @@ func (t *OSTool) Name() string {
 }
 
 func (t *OSTool) Description() string {
-	return fmt.Sprintf("操控作業系統 (目前環境: %s)，包含執行指令、截圖、模擬滑鼠鍵盤等。支援動作包含: %s", runtime.GOOS, fmt.Sprint(t.controller.Capabilities()))
+	// Dynamically generate supported actions list
+	var actions []string
+	for name, spec := range osActionRegistry {
+		actions = append(actions, fmt.Sprintf("'%s' (%s)", name, spec.Description))
+	}
+	sort.Strings(actions)
+
+	return fmt.Sprintf(
+		"Control the operating system (environment: %s). Supported actions: %s",
+		runtime.GOOS,
+		strings.Join(actions, ", "),
+	)
 }
 
 func (t *OSTool) Parameters() map[string]any {
 	return map[string]any{
 		"action": map[string]any{
 			"type":        "string",
-			"description": "要執行的動作名稱。支援動作: 'run_command' (執行系統 Shell 指令), 'screenshot' (擷取螢幕截圖)",
+			"description": "Name of the action to execute",
+			"enum":        t.getActionNames(),
 		},
 		"params": map[string]any{
 			"type":        "object",
-			"description": "動作所需的參數。注意：必須包含在 'params' 物件內。例如 {'command': 'dir'} 或 {'x': 100, 'y': 200}",
+			"description": "Action parameters (dependent on action)",
 		},
 	}
 }
@@ -42,56 +125,97 @@ func (t *OSTool) RequiredParameters() []string {
 	return []string{"action"}
 }
 
+// getActionNames returns a sorted list of supported action names
+func (t *OSTool) getActionNames() []string {
+	keys := make([]string, 0, len(osActionRegistry))
+	for k := range osActionRegistry {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+// ---------- Execute ----------
+
 func (t *OSTool) Execute(args map[string]any) (*ToolResult, error) {
-	action, ok := args["action"].(string)
-	if !ok {
-		return nil, fmt.Errorf("missing string parameter 'action'")
-	}
-
-	params, _ := args["params"].(map[string]any)
-	if params == nil {
-		params = make(map[string]any)
-	}
-
-	resp, err := t.controller.Execute(ActionRequest{
-		Action: action,
-		Params: params,
-	})
+	// 1. Parsing and validation
+	spec, params, err := t.parseAndValidateArgs(args)
 	if err != nil {
 		return nil, err
 	}
 
+	// 2. Call Controller
+	resp, err := t.controller.Execute(ActionRequest{
+		Action: spec.Name,
+		Params: params,
+	})
+
+	// 3. Handle underlying communication errors (System Error)
+	if err != nil {
+		return nil, fmt.Errorf("controller execution error: %w", err)
+	}
+
+	// 4. Handle business logic failures (Action Failure)
 	if !resp.Success {
 		return &ToolResult{
 			Content: []ContentBlock{
-				{Type: "text", Text: "Error executing action: " + resp.Error},
+				{Type: "text", Text: fmt.Sprintf("Action '%s' failed: %s", spec.Name, resp.Error)},
+			},
+			Details: map[string]any{
+				"action":  spec.Name,
+				"success": false,
+				"error":   resp.Error,
 			},
 		}, nil
 	}
 
-	// 根據動作類型包裝結果
-	var blocks []ContentBlock
-	switch action {
-	case "screenshot":
-		if b64, ok := resp.Data.(string); ok {
-			blocks = append(blocks, ContentBlock{
-				Type: "image",
-				Data: b64,
-			})
-		} else {
-			blocks = append(blocks, ContentBlock{Type: "text", Text: "Failed to get screenshot data"})
-		}
-	default:
-		blocks = append(blocks, ContentBlock{
-			Type: "text",
-			Text: fmt.Sprintf("%v", resp.Data),
-		})
+	// 5. Format result
+	blocks, err := spec.FormatResult(resp)
+	if err != nil {
+		return nil, fmt.Errorf("failed to format result: %w", err)
 	}
 
 	return &ToolResult{
 		Content: blocks,
 		Details: map[string]any{
-			"action": action,
+			"action":  spec.Name,
+			"success": true,
 		},
 	}, nil
+}
+
+// parseAndValidateArgs handles argument parsing logic
+func (t *OSTool) parseAndValidateArgs(args map[string]any) (ActionSpec, map[string]any, error) {
+	actionName, ok := args["action"].(string)
+	if !ok || actionName == "" {
+		return ActionSpec{}, nil, fmt.Errorf("missing or invalid parameter 'action'")
+	}
+
+	spec, exists := osActionRegistry[actionName]
+	if !exists {
+		return ActionSpec{}, nil, fmt.Errorf("unsupported action: %s", actionName)
+	}
+
+	var params map[string]any
+	if raw, ok := args["params"]; ok {
+		if p, ok := raw.(map[string]any); ok {
+			params = p
+		} else {
+			return ActionSpec{}, nil, fmt.Errorf("'params' must be an object")
+		}
+	} else {
+		params = make(map[string]any)
+	}
+
+	if spec.RequireParams && len(params) == 0 {
+		return ActionSpec{}, nil, fmt.Errorf("action '%s' requires params", actionName)
+	}
+
+	if spec.Validate != nil {
+		if err := spec.Validate(params); err != nil {
+			return ActionSpec{}, nil, err
+		}
+	}
+
+	return spec, params, nil
 }

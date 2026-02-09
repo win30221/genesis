@@ -5,55 +5,65 @@ import (
 	"genesis/pkg/llm"
 	"genesis/pkg/monitor"
 	"log"
+	"strings"
 	"sync"
 	"time"
 )
 
-// MessageHandler 是一個回呼函數型別，用於處理從 Gateway 接收到的標準化訊息
+// MessageHandler is a callback function type that defines the processing
+// signature for standardized messages arriving from the Gateway.
+// It is typically implemented by the core processing unit (e.g., ChatHandler).
 type MessageHandler func(msg *UnifiedMessage)
 
-// GatewayManager 負責管理所有的 Channels 並統一路由訊息
+// GatewayManager is the central orchestration hub that manages multiple
+// communication channels and unifies message routing for both input and output.
+// It implements the ChannelContext interface to receive callbacks from channels.
 type GatewayManager struct {
-	channels      map[string]Channel
-	msgHandler    MessageHandler
-	monitor       monitor.Monitor // 監控器
-	channelBuffer int             // 內部 Channel 緩衝大小
-	mu            sync.RWMutex
+	channels      map[string]Channel // Registry of active channel instances indexed by ID
+	msgHandler    MessageHandler     // Callback for business logic processing
+	monitor       monitor.Monitor    // Interface for broadcasting message logs to monitoring tools
+	channelBuffer int                // Buffer size for internal Go channels during streaming
+	mu            sync.RWMutex       // Mutex protecting the concurrent access to the channels map
 }
 
-// NewGatewayManager 建立一個新的 GatewayManager
+// NewGatewayManager initializes a new GatewayManager instance with default
+// parameters like a standard internal channel buffer size.
 func NewGatewayManager() *GatewayManager {
 	return &GatewayManager{
 		channels:      make(map[string]Channel),
-		channelBuffer: 100, // 預設值
+		channelBuffer: 100, // Default buffer size for stream wrapping
 	}
 }
 
-// SetChannelBuffer 設定內部的 Channel 緩衝大小
+// SetChannelBuffer configures the size of internal Go channels used in
+// StreamReply to prevent blocking during chunk processing.
 func (g *GatewayManager) SetChannelBuffer(size int) {
 	if size > 0 {
 		g.channelBuffer = size
 	}
 }
 
-// SetMessageHandler 設定處理訊息的核心邏輯 (通常是 LLM 處理函式)
+// SetMessageHandler injects the core logic callback that will be invoked
+// whenever a standardized message is received from any registered channel.
 func (g *GatewayManager) SetMessageHandler(handler MessageHandler) {
 	g.msgHandler = handler
 }
 
-// SetMonitor 設定監控器
+// SetMonitor sets the monitoring implementation responsible for displaying
+// or persisting user and assistant messages for observatory purposes.
 func (g *GatewayManager) SetMonitor(m monitor.Monitor) {
 	g.monitor = m
 }
 
-// Register 註冊一個 Channel
+// Register adds a new communication Channel instance to the manager's registry.
 func (g *GatewayManager) Register(c Channel) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.channels[c.ID()] = c
 }
 
-// GetChannel 取得特定的 Channel (通常用於主動發送訊息)
+// GetChannel retrieves a specifically registered Channel instance by its ID.
+// This is commonly used for high-level routing or proactive messaging.
 func (g *GatewayManager) GetChannel(id string) (Channel, bool) {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
@@ -61,14 +71,16 @@ func (g *GatewayManager) GetChannel(id string) (Channel, bool) {
 	return c, ok
 }
 
-// StartAll 啟動所有已註冊的 Channels
+// StartAll iterates through all registered channels and invokes their
+// Start() method, passing the manager itself as the ChannelContext.
+// Returns the first error encountered during the batch startup process.
 func (g *GatewayManager) StartAll() error {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
 
 	for id, c := range g.channels {
 		log.Printf("Starting channel: %s", id)
-		// 啟動 Channel，並傳入 self 作為 Context
+		// Inject self as the context for receiving messages from the channel
 		if err := c.Start(g); err != nil {
 			return fmt.Errorf("failed to start channel %s: %w", id, err)
 		}
@@ -76,7 +88,8 @@ func (g *GatewayManager) StartAll() error {
 	return nil
 }
 
-// StopAll 停止所有 Channels
+// StopAll gracefully shuts down all registered channels to release system
+// resources like network listeners or API long-polling workers.
 func (g *GatewayManager) StopAll() {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
@@ -89,75 +102,63 @@ func (g *GatewayManager) StopAll() {
 	}
 }
 
-// SendReply 統一的回覆介面，透過 Channel 介面送回訊息
+// SendReply is a convenience wrapper around StreamReply for sending simple
+// text messages. It packages the content into a single ContentBlock and
+// delegates to Stream, ensuring all replies follow one unified code path.
 func (g *GatewayManager) SendReply(session SessionContext, content string) error {
-	log.Printf("[Gateway] -> Reply to %s (%s): %s", session.ChannelID, session.Username, content)
-
-	// 廣播到監控器
-	if g.monitor != nil {
-		g.monitor.OnMessage(monitor.MonitorMessage{
-			Timestamp:   time.Now(),
-			MessageType: "ASSISTANT",
-			ChannelID:   session.ChannelID,
-			Username:    session.Username,
-			Content:     content,
-		})
-	}
-
-	c, ok := g.GetChannel(session.ChannelID)
-	if !ok {
-		return fmt.Errorf("channel %s not found", session.ChannelID)
-	}
-	return c.Send(session, content)
+	ch := make(chan llm.ContentBlock, 1)
+	ch <- llm.ContentBlock{Type: "text", Text: content}
+	close(ch)
+	return g.StreamReply(session, ch)
 }
 
-// SendSignal 發送一個控制訊號 (如 thinking) 到 Channel
+// SendSignal transmits a control signal (tipically for UI updates like
+// typing indicators) to the target channel if it supports SignalingChannel.
 func (g *GatewayManager) SendSignal(session SessionContext, signal string) error {
 	c, ok := g.GetChannel(session.ChannelID)
 	if !ok {
 		return fmt.Errorf("channel %s not found", session.ChannelID)
 	}
 
-	// 檢查 Channel 是否支援訊號介面
+	// Verify if the channel implementation supports control signaling
 	if sc, ok := c.(SignalingChannel); ok {
 		log.Printf("[Gateway] -> Signal to %s (%s): %s", session.ChannelID, session.Username, signal)
 		return sc.SendSignal(session, signal)
 	}
 
-	// 不支援的通道安靜地忽略
+	// Silently ignore signal attempts for unsupported platforms (e.g., CLI)
 	return nil
 }
 
-// StreamReply 統一的串流回覆介面
+// StreamReply handles multi-block streaming content. It wraps the provided
+// blocks channel to concurrently forward data while aggregating text for the monitor.
 func (g *GatewayManager) StreamReply(session SessionContext, blocks <-chan llm.ContentBlock) error {
-	// log.Printf("[Gateway] -> Stream Reply to %s (%s) started", session.ChannelID, session.Username)
-
 	c, ok := g.GetChannel(session.ChannelID)
 	if !ok {
 		return fmt.Errorf("channel %s not found", session.ChannelID)
 	}
 
-	// 建立一個新的 channel 來包裝原始 blocks，以便收集完整內容廣播到監控器
+	// Create a wrapper channel to calculate full content while streaming
 	wrappedBlocks := make(chan llm.ContentBlock, g.channelBuffer)
-	var fullContent string
+	var sb strings.Builder
 
 	go func() {
 		defer close(wrappedBlocks)
 		for block := range blocks {
-			// 只收集 text 類型的內容用於監控
+			// Aggregate text blocks only for monitoring historical summary
 			if block.Type == "text" {
-				fullContent += block.Text
+				sb.WriteString(block.Text)
 			}
 			wrappedBlocks <- block
 		}
-		// 串流結束後，廣播完整訊息到監控器
-		if fullContent != "" && g.monitor != nil {
+		// Finalize the monitor entry once the stream is fully drained
+		if sb.Len() > 0 && g.monitor != nil {
 			g.monitor.OnMessage(monitor.MonitorMessage{
 				Timestamp:   time.Now(),
 				MessageType: "ASSISTANT",
 				ChannelID:   session.ChannelID,
 				Username:    session.Username,
-				Content:     fullContent,
+				Content:     sb.String(),
 			})
 		}
 	}()
@@ -165,13 +166,14 @@ func (g *GatewayManager) StreamReply(session SessionContext, blocks <-chan llm.C
 	return c.Stream(session, wrappedBlocks)
 }
 
-// OnMessage 實作 ChannelContext 介面，接收來自 Channel 的訊息
+// OnMessage implements the ChannelContext interface. It receives standardized
+// messages from channels, logs them, broadcasts to monitor, and forwards to handler.
 func (g *GatewayManager) OnMessage(channelID string, msg *UnifiedMessage) {
-	// 增強型 Log
+	// Structured logging for inbound user communications
 	log.Printf("[Gateway] <- Received from %s [%s(%s)]: %s",
 		channelID, msg.Session.Username, msg.Session.UserID, msg.Content)
 
-	// 廣播到監控器
+	// Broadcast the user message to the monitor for real-time observation
 	if g.monitor != nil {
 		g.monitor.OnMessage(monitor.MonitorMessage{
 			Timestamp:   time.Now(),
@@ -183,7 +185,7 @@ func (g *GatewayManager) OnMessage(channelID string, msg *UnifiedMessage) {
 	}
 
 	if g.msgHandler != nil {
-		// 將訊息轉發給核心處理器 (LLM)
+		// Forward message to the business logic handler (e.g., ChatHandler)
 		g.msgHandler(msg)
 	} else {
 		log.Println("[Gateway] Warning: No message handler set")

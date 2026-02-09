@@ -8,14 +8,15 @@ import (
 	"time"
 )
 
-// LogConfig 定義日誌配置
+// LogConfig defines the behavioral parameters for the global system logger,
+// including time formatting and output destination.
 type LogConfig struct {
-	TimeFormat string    // 時間格式，例如 "2006-01-02 15:04:05"
-	Prefix     string    // 日誌前綴，例如 "[Genesis] "
-	Output     io.Writer // 輸出目標，預設為 os.Stderr
+	TimeFormat string    // Layout for timestamps (Go time.Format style)
+	Prefix     string    // Static string prepended to every log line
+	Output     io.Writer // Destination for log bytes (defaults to os.Stderr)
 }
 
-// DefaultLogConfig 返回預設配置
+// DefaultLogConfig returns default configuration
 func DefaultLogConfig() LogConfig {
 	return LogConfig{
 		TimeFormat: "2006-01-02 15:04:05",
@@ -24,19 +25,19 @@ func DefaultLogConfig() LogConfig {
 	}
 }
 
-// customLogger 實作 io.Writer 來攔截和格式化日誌
+// customLogger implements io.Writer to intercept and format logs
 type customLogger struct {
 	config LogConfig
 }
 
 func (l *customLogger) Write(p []byte) (n int, err error) {
 	timestamp := time.Now().Format(l.config.TimeFormat)
-	// 使用 Fprintf 寫入格式化的日誌
+	// Use Fprintf to write formatted logs
 	_, err = fmt.Fprintf(l.config.Output, "%s[%s] %s", l.config.Prefix, timestamp, p)
 	return len(p), err
 }
 
-// PrintBanner 印出啟動 Banner
+// PrintBanner prints the startup banner
 func PrintBanner() {
 	banner := `
  ██████╗ ███████╗███╗   ██╗███████╗███████╗██╗███████╗
@@ -49,17 +50,18 @@ func PrintBanner() {
 	fmt.Println(banner)
 }
 
-// SetupSystemLogger 設定全域系統日誌格式
+// SetupSystemLogger configures global system logging format
 func SetupSystemLogger(config LogConfig) {
-	// 移除 log 套件預設的旗標（例如預設的時間戳）
+	// Remove default flags (e.g., default timestamp)
 	log.SetFlags(0)
 
-	// 設定自訂的 writer
+	// Set custom writer
 	logger := &customLogger{config: config}
 	log.SetOutput(logger)
 }
 
-// Startup 執行監控系統的完整啟動流程 (印 Banner + 設定 Logger)
+// Startup orchestrates the standard system initialization sequence,
+// including printing the ASCII banner and setting up the global logger.
 func Startup() {
 	PrintBanner()
 	SetupSystemLogger(DefaultLogConfig())
