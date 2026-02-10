@@ -107,7 +107,7 @@ func (g *GatewayManager) StopAll() {
 // delegates to Stream, ensuring all replies follow one unified code path.
 func (g *GatewayManager) SendReply(session SessionContext, content string) error {
 	ch := make(chan llm.ContentBlock, 1)
-	ch <- llm.ContentBlock{Type: "text", Text: content}
+	ch <- llm.ContentBlock{Type: llm.BlockTypeText, Text: content}
 	close(ch)
 	return g.StreamReply(session, ch)
 }
@@ -146,7 +146,7 @@ func (g *GatewayManager) StreamReply(session SessionContext, blocks <-chan llm.C
 		defer close(wrappedBlocks)
 		for block := range blocks {
 			// Aggregate text blocks only for monitoring historical summary
-			if block.Type == "text" {
+			if block.Type == llm.BlockTypeText {
 				sb.WriteString(block.Text)
 			}
 			wrappedBlocks <- block

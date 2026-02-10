@@ -267,73 +267,40 @@ func (h *ChatHandler) processLLMStream(msg *gateway.UnifiedMessage) llm.Message 
 		return h.processLLMStream(msg)
 	}
 
-	// 3. General anomaly detection and automatic retry
-	if len(assistantMsg.ToolCalls) == 0 {
-		isNormal := false
-		reason := "UNKNOWN"
-		if assistantMsg.Usage != nil {
-			reason = assistantMsg.Usage.StopReason
-		}
-
-		// Determine if it's a normal termination signal for each provider
-		if reason == "STOP" || reason == "stop" || reason == "FINISH_REASON_STOP" {
-			isNormal = true
-		}
-
-		// Get received content for log preview
-		var sb strings.Builder
-		hasContent := false
-		hasThinking := false
-		for _, b := range assistantMsg.Content {
-			if b.Type == "thinking" && b.Text != "" {
-				hasThinking = true
-			}
-			if b.Type == "text" && b.Text != "" {
-				hasContent = true
-			}
-			sb.WriteString(b.Text)
-		}
-		preview := sb.String()
-		if len(preview) > 100 {
-			preview = preview[:100] + "..."
-		}
-
-		if !isNormal || (!hasContent && !hasThinking) || streamErr != nil {
-			// 3.1 Handle continuation logic (StopReason == "length")
-			if reason == "length" && (hasContent || hasThinking) {
-				maxCont := h.systemConfig.MaxContinuations
-				if msg.ContinueCount < maxCont {
-					msg.ContinueCount++
-					log.Printf("📥 Detection of truncation (length). [Thinking: %v, Content: %v]. Requesting continuation (%d/%d). Preview: [%s]", hasThinking, hasContent, msg.ContinueCount, maxCont, preview)
-
-					blockCh <- llm.NewErrorBlock(fmt.Sprintf("⚠️ Content truncated due to length, attempting to continue (%d/%d)...", msg.ContinueCount, maxCont))
-
-					// Store current partial response in history
-					h.history.Add(assistantMsg)
-
-					time.Sleep(time.Duration(h.systemConfig.RetryDelayMs) * time.Millisecond)
-					safeClose()
-					return h.processLLMStream(msg)
-				} else {
-					log.Printf("❌ Max continuation reached (%d/%d). Stopping.", maxCont, maxCont)
-					blockCh <- llm.NewErrorBlock("❌ Max continuation reached, forced stop.")
-					return assistantMsg
-				}
-			}
-
-			// 3.2 Handle general retry logic
-			if retried := h.attemptRetry(msg, blockCh, reason, streamErr, preview); retried {
-				safeClose()
-				return h.processLLMStream(msg)
-			}
-		}
+	// 3. Anomaly detection and automatic retry
+	reason := "UNKNOWN"
+	if assistantMsg.Usage != nil {
+		reason = assistantMsg.Usage.StopReason
 	}
 
-	// 4. Handle transient stream interruptions (e.g., 500 error)
-	if streamErr != nil && h.client.IsTransientError(streamErr) {
-		if retried := h.attemptRetry(msg, blockCh, "transient", streamErr, ""); retried {
-			// Exponential backoff for transient errors
-			time.Sleep(time.Duration(msg.RetryCount) * time.Second)
+	hasContent, hasThinking, preview := summarizeContent(assistantMsg)
+	isNormal := reason == llm.StopReasonStop && streamErr == nil && (hasContent || hasThinking)
+
+	if !isNormal {
+		// 3.1 Handle continuation logic (StopReason == "length")
+		if reason == llm.StopReasonLength && (hasContent || hasThinking) {
+			maxCont := h.systemConfig.MaxContinuations
+			if msg.ContinueCount < maxCont {
+				msg.ContinueCount++
+				log.Printf("📥 Truncation detected (length). [Thinking: %v, Content: %v]. Continuation (%d/%d). Preview: [%s]", hasThinking, hasContent, msg.ContinueCount, maxCont, preview)
+
+				h.gw.SendReply(msg.Session, fmt.Sprintf("⚠️ Content truncated due to length, attempting to continue (%d/%d)...", msg.ContinueCount, maxCont))
+
+				// Store current partial response in history
+				h.history.Add(assistantMsg)
+
+				time.Sleep(time.Duration(h.systemConfig.RetryDelayMs) * time.Millisecond)
+				safeClose()
+				return h.processLLMStream(msg)
+			} else {
+				log.Printf("❌ Max continuation reached (%d/%d). Stopping.", maxCont, maxCont)
+				h.gw.SendReply(msg.Session, "❌ Max continuation reached, forced stop.")
+				return assistantMsg
+			}
+		}
+
+		// 3.2 Handle general retry logic
+		if retried := h.attemptRetry(msg, reason, streamErr, preview); retried {
 			safeClose()
 			return h.processLLMStream(msg)
 		}
@@ -455,18 +422,18 @@ func (h *ChatHandler) processChunk(chunk llm.StreamChunk, currentText, currentTh
 
 	for _, block := range chunk.ContentBlocks {
 		switch block.Type {
-		case "text":
+		case llm.BlockTypeText:
 			currentText += block.Text
 			// Directly send ContentBlock
 			blockCh <- block
 
-		case "thinking":
+		case llm.BlockTypeThinking:
 			currentThinking += block.Text
 			if h.systemConfig.ShowThinking {
 				// Directly send ContentBlock
 				blockCh <- block
 			}
-		case "image":
+		case llm.BlockTypeImage:
 			// Images in stream (less common in Ollama, but supported for completeness)
 			blockCh <- block
 		}
@@ -551,11 +518,11 @@ func (h *ChatHandler) handleSlashCommand(msg *gateway.UnifiedMessage) {
 // attemptRetry checks if a retry is allowed and, if so, increments the counter
 // and sends a notification to the user. Returns true if the caller should proceed
 // with the retry (recursive call), false if max retries have been exhausted.
-func (h *ChatHandler) attemptRetry(msg *gateway.UnifiedMessage, blockCh chan<- llm.ContentBlock, reason string, streamErr error, preview string) bool {
+func (h *ChatHandler) attemptRetry(msg *gateway.UnifiedMessage, reason string, streamErr error, preview string) bool {
 	maxRetries := h.systemConfig.MaxRetries
 	if msg.RetryCount >= maxRetries {
 		log.Printf("❌ Max retries reached (%d/%d). Reason: %s (Err: %v)", maxRetries, maxRetries, reason, streamErr)
-		blockCh <- llm.NewErrorBlock("❌ AI response remains abnormal, please try rephrasing or restarting the conversation.")
+		h.gw.SendReply(msg.Session, "❌ AI response remains abnormal, please try rephrasing or restarting the conversation.")
 		return false
 	}
 
@@ -566,10 +533,30 @@ func (h *ChatHandler) attemptRetry(msg *gateway.UnifiedMessage, blockCh chan<- l
 	if streamErr != nil {
 		retryNotice = fmt.Sprintf("⚠️ Connection error (%v), attempting automatic recovery (%d/%d)...", streamErr, msg.RetryCount, maxRetries)
 	}
-	blockCh <- llm.NewErrorBlock(retryNotice)
+	h.gw.SendReply(msg.Session, retryNotice)
 
 	time.Sleep(time.Duration(h.systemConfig.RetryDelayMs) * time.Millisecond)
 	return true
+}
+
+// summarizeContent scans the assistant message and returns whether it has
+// text content, thinking content, and a truncated preview string for logging.
+func summarizeContent(msg llm.Message) (hasContent, hasThinking bool, preview string) {
+	var sb strings.Builder
+	for _, b := range msg.Content {
+		if b.Type == llm.BlockTypeThinking && b.Text != "" {
+			hasThinking = true
+		}
+		if b.Type == llm.BlockTypeText && b.Text != "" {
+			hasContent = true
+		}
+		sb.WriteString(b.Text)
+	}
+	preview = sb.String()
+	if len(preview) > 100 {
+		preview = preview[:100] + "..."
+	}
+	return
 }
 
 // convertToolResult transforms a tools.ToolResult into a slice of llm.ContentBlock.
@@ -577,7 +564,7 @@ func (h *ChatHandler) attemptRetry(msg *gateway.UnifiedMessage, blockCh chan<- l
 func convertToolResult(res *tools.ToolResult) []llm.ContentBlock {
 	var blocks []llm.ContentBlock
 	for _, b := range res.Content {
-		if b.Type == "image" {
+		if b.Type == llm.BlockTypeImage {
 			data, _ := tools.Base64Decode(b.Data)
 			blocks = append(blocks, llm.NewImageBlock(data, "image/png"))
 		} else {

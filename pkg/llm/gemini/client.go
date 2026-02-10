@@ -179,8 +179,8 @@ func (g *GeminiClient) StreamChat(ctx context.Context, messages []llm.Message, a
 
 			for _, candidate := range resp.Candidates {
 				if candidate.FinishReason != "" && lastUsage != nil {
-					lastUsage.StopReason = string(candidate.FinishReason)
-					if candidate.FinishReason == "FINISH_REASON_MAX_TOKENS" {
+					lastUsage.StopReason = normalizeStopReason(string(candidate.FinishReason))
+					if lastUsage.StopReason == llm.StopReasonLength {
 						chunkCh <- llm.NewErrorChunk("Response truncated due to max tokens limit. You might want to adjust your prompt or settings.", nil, false)
 					}
 				}
@@ -194,13 +194,13 @@ func (g *GeminiClient) StreamChat(ctx context.Context, messages []llm.Message, a
 							if part.Thought {
 								// Thinking content
 								blocks = append(blocks, llm.ContentBlock{
-									Type: "thinking",
+									Type: llm.BlockTypeThinking,
 									Text: part.Text,
 								})
 							} else {
 								// Normal response
 								blocks = append(blocks, llm.ContentBlock{
-									Type: "text",
+									Type: llm.BlockTypeText,
 									Text: part.Text,
 								})
 							}
@@ -264,7 +264,7 @@ func (g *GeminiClient) convertMessages(messages []llm.Message) ([]*genai.Content
 			// System role as SystemInstruction
 			var parts []*genai.Part
 			for _, block := range msg.Content {
-				if block.Type == "text" && block.Text != "" {
+				if block.Type == llm.BlockTypeText && block.Text != "" {
 					parts = append(parts, &genai.Part{Text: block.Text})
 				}
 			}
@@ -329,7 +329,7 @@ func (g *GeminiClient) convertMessages(messages []llm.Message) ([]*genai.Content
 				}
 				parts = append(parts, &genai.Part{Text: block.Text})
 
-			case "thinking":
+			case llm.BlockTypeThinking:
 				if block.Text == "" {
 					continue
 				}
@@ -339,7 +339,7 @@ func (g *GeminiClient) convertMessages(messages []llm.Message) ([]*genai.Content
 					Thought: true,
 				})
 
-			case "image":
+			case llm.BlockTypeImage:
 				if block.Source != nil && len(block.Source.Data) > 0 {
 					parts = append(parts, &genai.Part{
 						InlineData: &genai.Blob{
@@ -360,6 +360,20 @@ func (g *GeminiClient) convertMessages(messages []llm.Message) ([]*genai.Content
 	}
 
 	return genaiContents, systemInstruction
+}
+
+// normalizeStopReason converts Gemini-specific FinishReason strings to
+// a standardized lowercase format consistent across all providers.
+// e.g. "STOP" / "FINISH_REASON_STOP" → "stop", "MAX_TOKENS" → "length"
+func normalizeStopReason(reason string) string {
+	switch strings.ToUpper(reason) {
+	case "STOP", "FINISH_REASON_STOP":
+		return llm.StopReasonStop
+	case "MAX_TOKENS", "FINISH_REASON_MAX_TOKENS":
+		return llm.StopReasonLength
+	default:
+		return strings.ToLower(reason)
+	}
 }
 
 // IsTransientError implements the llm.LLMClient interface

@@ -156,7 +156,7 @@ func NewTextMessage(role, text string) Message {
 	return Message{
 		Role: role,
 		Content: []ContentBlock{{
-			Type: "text",
+			Type: BlockTypeText,
 			Text: text,
 		}},
 		Timestamp: time.Now().Unix(),
@@ -188,7 +188,7 @@ func (m *Message) AddContentBlock(block ContentBlock) {
 func (m *Message) GetTextContent() string {
 	var sb strings.Builder
 	for _, block := range m.Content {
-		if block.Type == "text" {
+		if block.Type == BlockTypeText {
 			sb.WriteString(block.Text)
 		}
 	}
@@ -199,7 +199,7 @@ func (m *Message) GetTextContent() string {
 func (m *Message) GetThinkingContent() string {
 	var sb strings.Builder
 	for _, block := range m.Content {
-		if block.Type == "thinking" {
+		if block.Type == BlockTypeThinking {
 			sb.WriteString(block.Text)
 		}
 	}
@@ -220,7 +220,7 @@ func (m *Message) FilterBlocks(blockType string) []ContentBlock {
 // HasImages checks if the message contains images
 func (m *Message) HasImages() bool {
 	for _, block := range m.Content {
-		if block.Type == "image" {
+		if block.Type == BlockTypeImage {
 			return true
 		}
 	}
@@ -230,7 +230,7 @@ func (m *Message) HasImages() bool {
 // NewTextBlock creates a text block
 func NewTextBlock(text string) ContentBlock {
 	return ContentBlock{
-		Type: "text",
+		Type: BlockTypeText,
 		Text: text,
 	}
 }
@@ -238,7 +238,7 @@ func NewTextBlock(text string) ContentBlock {
 // NewThinkingBlock creates a thinking block
 func NewThinkingBlock(text string) ContentBlock {
 	return ContentBlock{
-		Type: "thinking",
+		Type: BlockTypeThinking,
 		Text: text,
 	}
 }
@@ -246,7 +246,7 @@ func NewThinkingBlock(text string) ContentBlock {
 // NewErrorBlock creates an error block
 func NewErrorBlock(text string) ContentBlock {
 	return ContentBlock{
-		Type: "error",
+		Type: BlockTypeError,
 		Text: text,
 	}
 }
@@ -254,7 +254,7 @@ func NewErrorBlock(text string) ContentBlock {
 // NewImageBlock creates an image block (base64)
 func NewImageBlock(data []byte, mimeType string) ContentBlock {
 	return ContentBlock{
-		Type: "image",
+		Type: BlockTypeImage,
 		Source: &ImageSource{
 			Type:      "base64",
 			MediaType: mimeType,
@@ -266,7 +266,7 @@ func NewImageBlock(data []byte, mimeType string) ContentBlock {
 // NewImageBlockFromURL creates an image block (URL)
 func NewImageBlockFromURL(url, mimeType string) ContentBlock {
 	return ContentBlock{
-		Type: "image",
+		Type: BlockTypeImage,
 		Source: &ImageSource{
 			Type:      "url",
 			MediaType: mimeType,
@@ -279,7 +279,7 @@ func NewImageBlockFromURL(url, mimeType string) ContentBlock {
 func NewTextChunk(text string) StreamChunk {
 	return StreamChunk{
 		ContentBlocks: []ContentBlock{{
-			Type: "text",
+			Type: BlockTypeText,
 			Text: text,
 		}},
 	}
@@ -289,7 +289,7 @@ func NewTextChunk(text string) StreamChunk {
 func NewThinkingChunk(text string) StreamChunk {
 	return StreamChunk{
 		ContentBlocks: []ContentBlock{{
-			Type: "thinking",
+			Type: BlockTypeThinking,
 			Text: text,
 		}},
 	}

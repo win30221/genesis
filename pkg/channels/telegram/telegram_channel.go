@@ -134,7 +134,7 @@ func (t *TelegramChannel) Start(ctx gateway.ChannelContext) error {
 
 // SendSignal implements the gateway.SignalingChannel interface
 func (t *TelegramChannel) SendSignal(session gateway.SessionContext, signal string) error {
-	if signal == "thinking" {
+	if signal == llm.BlockTypeThinking {
 		chatID, err := strconv.ParseInt(session.ChatID, 10, 64)
 		if err != nil {
 			return err
@@ -338,9 +338,9 @@ func (t *TelegramChannel) Stream(session gateway.SessionContext, blocks <-chan l
 
 	for block := range blocks {
 		switch block.Type {
-		case "thinking":
+		case llm.BlockTypeThinking:
 			thinkingBuf.WriteString(block.Text)
-		case "text", "error":
+		case llm.BlockTypeText, llm.BlockTypeError:
 			// Send thinking buffer when the first text block arrives if not already sent
 			if thinkingBuf.Len() > 0 && !thinkingSent {
 				thinkingMsg := "💭 Reasoning process:\n\n" + thinkingBuf.String()
@@ -350,7 +350,7 @@ func (t *TelegramChannel) Stream(session gateway.SessionContext, blocks <-chan l
 				thinkingSent = true
 			}
 			textBuf.WriteString(block.Text)
-		case "image":
+		case llm.BlockTypeImage:
 			// Send current text buffer first to maintain order
 			if textBuf.Len() > 0 {
 				replyMsg := "🤖 Assistant response:\n\n" + textBuf.String()

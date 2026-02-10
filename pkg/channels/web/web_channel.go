@@ -145,7 +145,7 @@ func (c *WebChannel) Stream(session gateway.SessionContext, blocks <-chan llm.Co
 			"type": block.Type,
 		}
 
-		if block.Type == "image" && block.Source != nil {
+		if block.Type == llm.BlockTypeImage && block.Source != nil {
 			if block.Source.Type == "base64" && len(block.Source.Data) > 0 {
 				msg["data"] = base64.StdEncoding.EncodeToString(block.Source.Data)
 				msg["mime"] = block.Source.MediaType

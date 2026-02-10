@@ -210,7 +210,7 @@ func (o *OllamaClient) StreamChat(ctx context.Context, messages []llm.Message, a
 				}
 
 				// Truncation is only logged; Handler manages continuation
-				if resp.DoneReason == "length" {
+				if resp.DoneReason == llm.StopReasonLength {
 					log.Printf("[Ollama] ⚠️ Response truncated due to length (num_predict).")
 				}
 
@@ -266,11 +266,11 @@ func (o *OllamaClient) convertMessages(messages []llm.Message) []api.Message {
 
 		for _, block := range m.Content {
 			switch block.Type {
-			case "text":
+			case llm.BlockTypeText:
 				textContent.WriteString(block.Text)
-			case "thinking":
+			case llm.BlockTypeThinking:
 				thinkingContent.WriteString(block.Text)
-			case "image":
+			case llm.BlockTypeImage:
 				if block.Source != nil && len(block.Source.Data) > 0 {
 					images = append(images, block.Source.Data)
 				}
