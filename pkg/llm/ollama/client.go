@@ -25,7 +25,7 @@ func NewOllamaClient(model string, baseURL string, options map[string]any) (*Oll
 		}
 	}
 
-	client, err := openailm.NewClient(apiKey, model, baseURL, options)
+	client, err := openailm.NewClient("ollama", apiKey, model, baseURL, options)
 	if err != nil {
 		return nil, err
 	}

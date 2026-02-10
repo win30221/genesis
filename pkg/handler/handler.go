@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"crypto/rand"
 	"fmt"
 	"genesis/pkg/config"
 	"genesis/pkg/gateway"
@@ -82,7 +83,9 @@ func (h *ChatHandler) initializeHistory() {
 // 6. Persists the final AI assistant response to the conversation history.
 func (h *ChatHandler) OnMessage(msg *gateway.UnifiedMessage) {
 	if msg.DebugID == "" {
-		msg.DebugID = time.Now().Format("20060102_150405")
+		b := make([]byte, 2)
+		rand.Read(b)
+		msg.DebugID = fmt.Sprintf("%x", b)
 	}
 	start := time.Now()
 
@@ -276,7 +279,11 @@ func (h *ChatHandler) processLLMStream(msg *gateway.UnifiedMessage) llm.Message 
 	}
 
 	hasContent, hasThinking, preview := summarizeContent(assistantMsg)
-	isNormal := reason == llm.StopReasonStop && streamErr == nil && (hasContent || hasThinking)
+	// A response is normal if:
+	// 1. It stopped because of a valid reason (stop/length) OR it's UNKNOWN but we have content and no stream error.
+	// 2. No stream error occurred.
+	// 3. We actually got some content or thinking process.
+	isNormal := streamErr == nil && (hasContent || hasThinking) && (reason == llm.StopReasonStop || reason == llm.StopReasonLength || reason == "UNKNOWN")
 
 	if !isNormal {
 		// 3.1 Handle continuation logic (StopReason == "length")
@@ -529,7 +536,13 @@ func (h *ChatHandler) attemptRetry(msg *gateway.UnifiedMessage, reason string, s
 	}
 
 	msg.RetryCount++
-	slog.Warn("Abnormal response, retrying", "reason", reason, "error", streamErr, "preview", preview, "retry", fmt.Sprintf("%d/%d", msg.RetryCount, maxRetries))
+	slog.Warn("Abnormal response, retrying",
+		"reason", reason,
+		"error", streamErr,
+		"preview", preview,
+		"has_content", preview != "",
+		"retry", fmt.Sprintf("%d/%d", msg.RetryCount, maxRetries),
+	)
 
 	retryNotice := fmt.Sprintf("⚠️ Abnormal response (%s), attempting automatic fix (%d/%d)...", reason, msg.RetryCount, maxRetries)
 	if streamErr != nil {

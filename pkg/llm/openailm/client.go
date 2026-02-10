@@ -3,9 +3,15 @@ package openailm
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"genesis/pkg/llm"
+	"log/slog"
+	"os"
+	"path/filepath"
+	"reflect"
 	"strings"
+	"time"
 
 	openai "github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/option"
@@ -14,13 +20,14 @@ import (
 // Client is a wrapper around the official OpenAI Go SDK
 type Client struct {
 	client       *openai.Client
+	provider     string
 	model        string
 	debugEnabled bool
 	options      map[string]any
 }
 
 // NewClient creates a new OpenAI client
-func NewClient(apiKey string, model string, baseURL string, options map[string]any) (*Client, error) {
+func NewClient(provider string, apiKey string, model string, baseURL string, options map[string]any) (*Client, error) {
 	opts := []option.RequestOption{
 		option.WithAPIKey(apiKey),
 	}
@@ -32,14 +39,15 @@ func NewClient(apiKey string, model string, baseURL string, options map[string]a
 	client := openai.NewClient(opts...)
 
 	return &Client{
-		client:  &client,
-		model:   model,
-		options: options,
+		client:   &client,
+		provider: provider,
+		model:    model,
+		options:  options,
 	}, nil
 }
 
 func (c *Client) Provider() string {
-	return "openai"
+	return c.provider
 }
 
 func (c *Client) SetDebug(enabled bool) {
@@ -72,11 +80,105 @@ func (c *Client) StreamChat(ctx context.Context, messages []llm.Message, availab
 
 		stream := c.client.Chat.Completions.NewStreaming(ctx, params)
 
+		var lastFinishReason string
+		var lastUsage *llm.LLMUsage
+
+		// Initializing debug file if enabled
+		var debugFile *os.File
+		if c.debugEnabled {
+			// Base debug dir
+			debugDir := filepath.Join("debug", "chunks", c.provider)
+
+			// If a specific session ID is provided in context, use it as parent
+			if val := ctx.Value(llm.DebugDirContextKey); val != nil {
+				if dirStr, ok := val.(string); ok {
+					debugDir = filepath.Join("debug", "chunks", dirStr, c.provider)
+				}
+			}
+			os.MkdirAll(debugDir, 0755)
+			timestamp := time.Now().Format("20060102_150405")
+			filename := filepath.Join(debugDir, fmt.Sprintf("%s.log", timestamp))
+			f, err := os.OpenFile(filename, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+			if err == nil {
+				debugFile = f
+				defer debugFile.Close()
+			} else {
+				slog.Error("Failed to create debug log", "error", err)
+			}
+		}
+
+		var thinkingLogBuffer string
 		for stream.Next() {
 			event := stream.Current()
 
+			// Use reflection to get unexported 'raw' string from event.JSON
+			var raw string
+			rv := reflect.ValueOf(event.JSON)
+			if rv.Kind() == reflect.Struct {
+				rt := rv.Type()
+				for i := 0; i < rt.NumField(); i++ {
+					if rt.Field(i).Name == "raw" {
+						raw = rv.Field(i).String()
+						break
+					}
+				}
+			}
+
+			// Log raw chunk if debug is enabled
+			if debugFile != nil {
+				debugFile.WriteString(raw + "\n")
+			}
+
 			if len(event.Choices) > 0 {
 				choice := event.Choices[0]
+
+				if choice.FinishReason != "" {
+					lastFinishReason = string(choice.FinishReason)
+				}
+
+				// Capture reasoning content (not explicitly in SDK v3.19.0 yet but in raw JSON)
+				var rawChoice struct {
+					Reasoning        string `json:"reasoning"`         // Top-level fallback
+					Thinking         string `json:"thinking"`          // Top-level fallback
+					ReasoningContent string `json:"reasoning_content"` // Top-level fallback (DeepSeek)
+					Choices          []struct {
+						Delta struct {
+							ReasoningContent string `json:"reasoning_content"`
+							Reasoning        string `json:"reasoning"`
+							Thinking         string `json:"thinking"`
+						} `json:"delta"`
+					} `json:"choices"`
+				}
+
+				if err := json.Unmarshal([]byte(raw), &rawChoice); err == nil {
+					thought := rawChoice.Reasoning
+					if thought == "" {
+						thought = rawChoice.Thinking
+					}
+					if thought == "" {
+						thought = rawChoice.ReasoningContent
+					}
+
+					if len(rawChoice.Choices) > 0 {
+						delta := rawChoice.Choices[0].Delta
+						if thought == "" {
+							thought = delta.ReasoningContent
+						}
+						if thought == "" {
+							thought = delta.Reasoning
+						}
+						if thought == "" {
+							thought = delta.Thinking
+						}
+					}
+
+					if thought != "" {
+						thinkingLogBuffer += thought
+						chunkCh <- llm.NewThinkingChunk(thought)
+					}
+				} else {
+					slog.Warn("Failed to unmarshal raw JSON for reasoning capture", "error", err)
+				}
 
 				if choice.Delta.Content != "" {
 					chunkCh <- llm.NewTextChunk(choice.Delta.Content)
@@ -101,17 +203,27 @@ func (c *Client) StreamChat(ctx context.Context, messages []llm.Message, availab
 			}
 
 			if event.Usage.TotalTokens > 0 {
-				usage := &llm.LLMUsage{
+				lastUsage = &llm.LLMUsage{
 					PromptTokens:     int(event.Usage.PromptTokens),
 					CompletionTokens: int(event.Usage.CompletionTokens),
 					TotalTokens:      int(event.Usage.TotalTokens),
 				}
-				chunkCh <- llm.NewFinalChunk("stop", usage)
 			}
+		}
+
+		if strings.TrimSpace(thinkingLogBuffer) != "" {
+			slog.Debug("Captured full thinking process", "provider", c.provider, "content", thinkingLogBuffer)
 		}
 
 		if err := stream.Err(); err != nil {
 			chunkCh <- llm.NewErrorChunk(fmt.Sprintf("Stream error: %v", err), err, true)
+		} else {
+			// Send final chunk with accumulated stats
+			reason := "stop"
+			if lastFinishReason != "" {
+				reason = normalizeStopReason(lastFinishReason)
+			}
+			chunkCh <- llm.NewFinalChunk(reason, lastUsage)
 		}
 	}()
 
@@ -237,4 +349,17 @@ func (c *Client) convertMessages(messages []llm.Message) []openai.ChatCompletion
 	}
 
 	return items
+}
+
+// normalizeStopReason converts OpenAI-specific finish_reason to
+// a standardized lowercase format.
+func normalizeStopReason(reason string) string {
+	switch strings.ToLower(reason) {
+	case "stop":
+		return llm.StopReasonStop
+	case "length":
+		return llm.StopReasonLength
+	default:
+		return reason
+	}
 }

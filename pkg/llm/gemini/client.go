@@ -120,13 +120,18 @@ func (g *GeminiClient) StreamChat(ctx context.Context, messages []llm.Message, a
 		// If debug mode is enabled, open file once for the entire stream
 		var debugFile *os.File
 		if g.debugEnabled {
-			debugID, _ := ctx.Value(llm.DebugDirContextKey).(string)
-			if debugID == "" {
-				debugID = time.Now().Format("20060102_150405")
-			}
+			// Base debug dir
 			debugDir := filepath.Join("debug", "chunks", "gemini")
+
+			// If session ID is in context, nested under it
+			debugID, _ := ctx.Value(llm.DebugDirContextKey).(string)
+			if debugID != "" {
+				debugDir = filepath.Join("debug", "chunks", debugID, "gemini")
+			}
 			_ = os.MkdirAll(debugDir, 0755)
-			debugFilePath := filepath.Join(debugDir, fmt.Sprintf("%s.log", debugID))
+
+			timestamp := time.Now().Format("20060102_150405")
+			debugFilePath := filepath.Join(debugDir, fmt.Sprintf("%s.log", timestamp))
 			slog.Debug("Debug mode ON", "provider", "gemini", "file", debugFilePath)
 			if f, err := os.OpenFile(debugFilePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644); err == nil {
 				debugFile = f
