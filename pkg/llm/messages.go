@@ -297,6 +297,10 @@ func NewThinkingChunk(text string) StreamChunk {
 
 // NewFinalChunk creates a final chunk (with usage statistics)
 func NewFinalChunk(reason string, usage *LLMUsage) StreamChunk {
+	if usage == nil {
+		usage = &LLMUsage{}
+	}
+	usage.StopReason = reason
 	return StreamChunk{
 		IsFinal:      true,
 		FinishReason: reason,

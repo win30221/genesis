@@ -174,7 +174,7 @@ func (h *ChatHandler) processLLMStream(msg *gateway.UnifiedMessage) llm.Message 
 		switch pName {
 		case "gemini":
 			availableTools = h.toolRegistry.ToGeminiFormat()
-		case "ollama":
+		case "ollama", "openai":
 			availableTools = h.toolRegistry.ToOllamaFormat()
 		default:
 			slog.Warn("Unknown provider format", "provider", pName)
@@ -279,11 +279,12 @@ func (h *ChatHandler) processLLMStream(msg *gateway.UnifiedMessage) llm.Message 
 	}
 
 	hasContent, hasThinking, preview := summarizeContent(assistantMsg)
+	hasToolCalls := len(assistantMsg.ToolCalls) > 0
 	// A response is normal if:
 	// 1. It stopped because of a valid reason (stop/length) OR it's UNKNOWN but we have content and no stream error.
 	// 2. No stream error occurred.
-	// 3. We actually got some content or thinking process.
-	isNormal := streamErr == nil && (hasContent || hasThinking) && (reason == llm.StopReasonStop || reason == llm.StopReasonLength || reason == "UNKNOWN")
+	// 3. We actually got some content, thinking process, or tool calls.
+	isNormal := streamErr == nil && (hasContent || hasThinking || hasToolCalls) && (reason == llm.StopReasonStop || reason == llm.StopReasonLength || reason == "UNKNOWN")
 
 	if !isNormal {
 		// 3.1 Handle continuation logic (StopReason == "length")
