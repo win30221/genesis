@@ -8,7 +8,7 @@ import (
 	"genesis/pkg/llm"
 	"genesis/pkg/tools"    // Added
 	"genesis/pkg/tools/os" // Added
-	"log"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -81,12 +81,12 @@ func (h *ChatHandler) initializeHistory() {
 // 5. Triggers the recursive processLLMStream loop for AI reasoning and action.
 // 6. Persists the final AI assistant response to the conversation history.
 func (h *ChatHandler) OnMessage(msg *gateway.UnifiedMessage) {
-	// Initialize debug ID (set only on first receipt, reused in recursive calls)
 	if msg.DebugID == "" {
 		msg.DebugID = time.Now().Format("20060102_150405")
 	}
+	start := time.Now()
 
-	log.Printf("📩 Msg from [%s] %s: %s (files: %d) [DebugID: %s]\n", msg.Session.ChannelID, msg.Session.Username, msg.Content, len(msg.Files), msg.DebugID)
+	slog.Info("Message received", "channel", msg.Session.ChannelID, "user", msg.Session.Username, "content", msg.Content, "files", len(msg.Files), "debug_id", msg.DebugID)
 
 	// --- Slash Commands ---
 	// Test commands should not be added to history, handle and return directly
@@ -109,7 +109,7 @@ func (h *ChatHandler) OnMessage(msg *gateway.UnifiedMessage) {
 	// Add image attachments
 	for _, file := range msg.Files {
 		userMsg.Content = append(userMsg.Content, llm.NewImageBlock(file.Data, file.MimeType))
-		log.Printf("📎 Attached file: %s (%s, %d bytes)", file.Filename, file.MimeType, len(file.Data))
+		slog.Info("Attached file", "name", file.Filename, "mime", file.MimeType, "bytes", len(file.Data))
 	}
 
 	// Store user message
@@ -122,6 +122,8 @@ func (h *ChatHandler) OnMessage(msg *gateway.UnifiedMessage) {
 	if len(assistantMsg.Content) > 0 {
 		h.history.Add(assistantMsg)
 	}
+
+	slog.Info("Agent loop finished", "duration", time.Since(start).String(), "debug_id", msg.DebugID)
 }
 
 // processLLMStream manages the core Agentic reasoning loop including streaming
@@ -172,7 +174,7 @@ func (h *ChatHandler) processLLMStream(msg *gateway.UnifiedMessage) llm.Message 
 		case "ollama":
 			availableTools = h.toolRegistry.ToOllamaFormat()
 		default:
-			log.Printf("[Handler] ⚠️ Unknown provider format for: %s", pName)
+			slog.Warn("Unknown provider format", "provider", pName)
 		}
 	}
 
@@ -180,7 +182,7 @@ func (h *ChatHandler) processLLMStream(msg *gateway.UnifiedMessage) llm.Message 
 	initTimer.Stop()
 
 	if err != nil {
-		log.Printf("Error calling LLM Stream: %v\n", err)
+		slog.Error("LLM stream init failed", "error", err)
 		h.gw.SendReply(msg.Session, fmt.Sprintf("❌ Error: %v", err))
 		return llm.Message{}
 	}
@@ -191,7 +193,7 @@ func (h *ChatHandler) processLLMStream(msg *gateway.UnifiedMessage) llm.Message 
 	go func() {
 		defer close(streamDone)
 		if err := h.gw.StreamReply(msg.Session, blockCh); err != nil {
-			log.Printf("Failed to stream reply: %v\n", err)
+			slog.Error("Failed to stream reply", "error", err)
 		}
 	}()
 
@@ -220,22 +222,22 @@ func (h *ChatHandler) processLLMStream(msg *gateway.UnifiedMessage) llm.Message 
 		for _, tc := range assistantMsg.ToolCalls {
 			tool, ok := h.toolRegistry.Get(tc.Name)
 			if !ok {
-				log.Printf("Unknown tool call: %s", tc.Name)
+				slog.Error("Unknown tool call", "name", tc.Name)
 				continue
 			}
 
 			// Parse parameters
 			var args map[string]any
 			if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
-				log.Printf("Failed to parse tool args: %v", err)
+				slog.Error("Failed to parse tool args", "error", err)
 				continue
 			}
 
 			// Execute tool
-			log.Printf("🛠️ Executing tool: %s with args: %+v", tc.Name, args)
+			slog.Info("Executing tool", "name", tc.Name, "args", args)
 			res, err := tool.Execute(args)
 			if err != nil {
-				log.Printf("Tool execution error: %v", err)
+				slog.Error("Tool execution error", "error", err)
 				continue
 			}
 
@@ -259,7 +261,7 @@ func (h *ChatHandler) processLLMStream(msg *gateway.UnifiedMessage) llm.Message 
 			}
 			close(resCh)
 			if err := h.gw.StreamReply(msg.Session, resCh); err != nil {
-				log.Printf("Failed to stream tool result: %v", err)
+				slog.Error("Failed to stream tool result", "error", err)
 			}
 		}
 
@@ -282,7 +284,7 @@ func (h *ChatHandler) processLLMStream(msg *gateway.UnifiedMessage) llm.Message 
 			maxCont := h.systemConfig.MaxContinuations
 			if msg.ContinueCount < maxCont {
 				msg.ContinueCount++
-				log.Printf("📥 Truncation detected (length). [Thinking: %v, Content: %v]. Continuation (%d/%d). Preview: [%s]", hasThinking, hasContent, msg.ContinueCount, maxCont, preview)
+				slog.Info("Truncation detected, continuing", "thinking", hasThinking, "content", hasContent, "continuation", fmt.Sprintf("%d/%d", msg.ContinueCount, maxCont), "preview", preview)
 
 				h.gw.SendReply(msg.Session, fmt.Sprintf("⚠️ Content truncated due to length, attempting to continue (%d/%d)...", msg.ContinueCount, maxCont))
 
@@ -293,7 +295,7 @@ func (h *ChatHandler) processLLMStream(msg *gateway.UnifiedMessage) llm.Message 
 				safeClose()
 				return h.processLLMStream(msg)
 			} else {
-				log.Printf("❌ Max continuation reached (%d/%d). Stopping.", maxCont, maxCont)
+				slog.Warn("Max continuation reached", "max", maxCont)
 				h.gw.SendReply(msg.Session, "❌ Max continuation reached, forced stop.")
 				return assistantMsg
 			}
@@ -521,13 +523,13 @@ func (h *ChatHandler) handleSlashCommand(msg *gateway.UnifiedMessage) {
 func (h *ChatHandler) attemptRetry(msg *gateway.UnifiedMessage, reason string, streamErr error, preview string) bool {
 	maxRetries := h.systemConfig.MaxRetries
 	if msg.RetryCount >= maxRetries {
-		log.Printf("❌ Max retries reached (%d/%d). Reason: %s (Err: %v)", maxRetries, maxRetries, reason, streamErr)
+		slog.Error("Max retries reached", "max", maxRetries, "reason", reason, "error", streamErr)
 		h.gw.SendReply(msg.Session, "❌ AI response remains abnormal, please try rephrasing or restarting the conversation.")
 		return false
 	}
 
 	msg.RetryCount++
-	log.Printf("⚠️ Abnormal response (Reason: %s, StreamErr: %v). Preview: [%s]. Retrying (%d/%d)...", reason, streamErr, preview, msg.RetryCount, maxRetries)
+	slog.Warn("Abnormal response, retrying", "reason", reason, "error", streamErr, "preview", preview, "retry", fmt.Sprintf("%d/%d", msg.RetryCount, maxRetries))
 
 	retryNotice := fmt.Sprintf("⚠️ Abnormal response (%s), attempting automatic fix (%d/%d)...", reason, msg.RetryCount, maxRetries)
 	if streamErr != nil {

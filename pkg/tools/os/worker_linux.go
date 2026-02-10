@@ -5,7 +5,7 @@ package os
 import (
 	"fmt"
 	"genesis/pkg/tools"
-	"log"
+	"log/slog"
 	"os"
 	"os/exec"
 	"strings"
@@ -56,7 +56,7 @@ func (w *LinuxWorker) Execute(req tools.ActionRequest) (*tools.ActionResponse, e
 }
 
 func (w *LinuxWorker) runCommand(cmdStr string) (string, error) {
-	log.Printf("[OS/Worker] 🐧 Executing in [%s]: %s", w.workingDir, cmdStr)
+	slog.Info("Executing command", "dir", w.workingDir, "command", cmdStr)
 
 	// Use bash for Linux
 	fullCmd := fmt.Sprintf("cd %q && %s && pwd", w.workingDir, cmdStr)
@@ -88,7 +88,7 @@ func (w *LinuxWorker) takeScreenshot() (string, error) {
 	cmd := exec.Command("gnome-screenshot", "-f", tempFile)
 	if err := cmd.Run(); err != nil {
 		// Fallback to scrot
-		log.Printf("gnome-screenshot failed, trying scrot: %v", err)
+		slog.Warn("gnome-screenshot failed, trying scrot", "error", err)
 		cmd = exec.Command("scrot", tempFile)
 		if err = cmd.Run(); err != nil {
 			return "", fmt.Errorf("screenshot failed (tried gnome-screenshot and scrot): %w", err)

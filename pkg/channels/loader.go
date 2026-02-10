@@ -4,7 +4,7 @@ import (
 	"genesis/pkg/config"
 	"genesis/pkg/gateway"
 	"genesis/pkg/llm"
-	"log"
+	"log/slog"
 
 	jsoniter "github.com/json-iterator/go"
 )
@@ -19,13 +19,13 @@ func LoadFromConfig(gw *gateway.GatewayManager, configs map[string]jsoniter.RawM
 	for name, rawConfig := range configs {
 		factory, ok := GetChannelFactory(name)
 		if !ok {
-			log.Printf("Unknown Channel type: %s", name)
+			slog.Warn("Unknown channel type", "name", name)
 			continue
 		}
 
 		channel, err := factory.Create(rawConfig, history, system)
 		if err != nil {
-			log.Printf("Failed to create channel '%s': %v", name, err)
+			slog.Error("Failed to create channel", "name", name, "error", err)
 			continue
 		}
 
@@ -35,6 +35,6 @@ func LoadFromConfig(gw *gateway.GatewayManager, configs map[string]jsoniter.RawM
 		}
 
 		gw.Register(channel)
-		log.Printf("✅ Channel '%s' registered", name)
+		slog.Info("Channel registered", "name", name)
 	}
 }

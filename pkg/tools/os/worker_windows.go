@@ -6,7 +6,7 @@ import (
 	"bytes"
 	"fmt"
 	"genesis/pkg/tools"
-	"log"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -84,7 +84,7 @@ func (w *WindowsWorker) runCommand(cmdStr string) (string, error) {
 	// Use ; to separate multiple commands
 	fullCmd := fmt.Sprintf("%s; $ExecutionContext.SessionState.Path.CurrentLocation.Path", utf8Cmd)
 
-	log.Printf("[OS/Worker] 💻 Executing in [%s]: %s", w.workingDir, fullCmd)
+	slog.Info("Executing command", "dir", w.workingDir, "command", fullCmd)
 
 	cmd := exec.Command("powershell", "-Command", fullCmd)
 	cmd.Dir = w.workingDir

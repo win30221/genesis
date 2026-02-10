@@ -70,6 +70,9 @@ type SystemConfig struct {
 	// DebugChunks enables saving every raw LLM response chunk to the /debug
 	// folder for inspection and troubleshooting purposes.
 	DebugChunks bool `json:"debug_chunks"`
+	// LogLevel sets the minimum severity for log output.
+	// Accepted values: "debug", "info", "warn", "error". Default: "info".
+	LogLevel string `json:"log_level"`
 	// EnableTools globally toggles the tool calling (agentic) functionality.
 	// If false, the AI will not be provided with any external tools/capabilities.
 	EnableTools bool `json:"enable_tools"`
@@ -91,6 +94,7 @@ func DefaultSystemConfig() *SystemConfig {
 		TelegramMessageLimit:  4000,
 		DownloadTimeoutMs:     10000,
 		ShowThinking:          true,
+		LogLevel:              "info",
 		EnableTools:           true,
 	}
 }

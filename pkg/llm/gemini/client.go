@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"genesis/pkg/llm"
-	"log"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -35,7 +35,7 @@ func NewGeminiClient(apiKey string, model string, useThought bool) *GeminiClient
 		Backend: genai.BackendGeminiAPI,
 	})
 	if err != nil {
-		log.Fatalf("❌ Fatal: Failed to create Gemini client: %v", err)
+		panic(fmt.Sprintf("Failed to create Gemini client: %v", err))
 	}
 
 	return &GeminiClient{
@@ -95,7 +95,7 @@ func (g *GeminiClient) StreamChat(ctx context.Context, messages []llm.Message, a
 	chunkCh := make(chan llm.StreamChunk, 100)
 	startResultCh := make(chan error, 1) // Unbuffered to detect if reader is present
 
-	log.Printf("[Gemini] 🌊 Streaming with model: %s...", g.model)
+	slog.Debug("Streaming", "provider", "gemini", "model", g.model)
 
 	go func() {
 		defer close(chunkCh)
@@ -127,7 +127,7 @@ func (g *GeminiClient) StreamChat(ctx context.Context, messages []llm.Message, a
 			debugDir := filepath.Join("debug", "chunks", "gemini")
 			_ = os.MkdirAll(debugDir, 0755)
 			debugFilePath := filepath.Join(debugDir, fmt.Sprintf("%s.log", debugID))
-			log.Printf("[Gemini] 🛠️ Debug mode ON. Chunks will be appended to: %s", debugFilePath)
+			slog.Debug("Debug mode ON", "provider", "gemini", "file", debugFilePath)
 			if f, err := os.OpenFile(debugFilePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644); err == nil {
 				debugFile = f
 				defer debugFile.Close()
@@ -145,7 +145,7 @@ func (g *GeminiClient) StreamChat(ctx context.Context, messages []llm.Message, a
 				// Try to process last resp if available
 				// Google GenAI SDK iterator might return some data along with the error
 				if resp == nil {
-					log.Printf("Gemini Stream Error: %v", err)
+					slog.Error("Stream error", "provider", "gemini", "error", err)
 					if !started {
 						startResultCh <- err
 					} else {
@@ -155,7 +155,7 @@ func (g *GeminiClient) StreamChat(ctx context.Context, messages []llm.Message, a
 					break
 				}
 				// If err != nil but resp != nil, continue processing this resp, then handle error in next iteration
-				log.Printf("Gemini Stream Error (with data): %v", err)
+				slog.Warn("Stream error with data", "provider", "gemini", "error", err)
 			}
 
 			if !started {
@@ -221,7 +221,7 @@ func (g *GeminiClient) StreamChat(ctx context.Context, messages []llm.Message, a
 									"gemini_function_call": part.FunctionCall,
 								},
 							})
-							log.Printf("[Gemini] 🛠️ Tool Call: %s(%s)", part.FunctionCall.Name, string(argsB))
+							slog.Debug("Tool call", "provider", "gemini", "name", part.FunctionCall.Name, "args", string(argsB))
 						}
 					}
 

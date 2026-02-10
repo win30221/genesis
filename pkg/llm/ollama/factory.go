@@ -3,7 +3,7 @@ package ollama
 import (
 	"genesis/pkg/config"
 	"genesis/pkg/llm"
-	"log"
+	"log/slog"
 )
 
 // OllamaFactory handles creation of Ollama Clients
@@ -18,7 +18,7 @@ func (f *OllamaFactory) Create(cfg llm.ProviderGroupConfig, sys *config.SystemCo
 		// Factory guarantees a valid URL (if not set in config, it remains empty or client uses default)
 		client, err := NewOllamaClient(model, baseURL, cfg.Options)
 		if err != nil {
-			log.Printf("Failed to create Ollama client for model %s: %v", model, err)
+			slog.Error("Failed to create Ollama client", "model", model, "error", err)
 			continue
 		}
 		clients = append(clients, client)

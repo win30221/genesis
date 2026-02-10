@@ -97,6 +97,7 @@ gw := gateway.NewGatewayBuilder().
 | `DownloadTimeoutMs` | 10000 | 下載外部媒體的超時 |
 | `ShowThinking` | `true` | 是否向使用者展示 AI 思考過程 |
 | `DebugChunks` | `false` | 是否保存原始串流資料至 `/debug` |
+| `LogLevel` | `"info"` | 日誌級別 (`debug`, `info`, `warn`, `error`) |
 | `EnableTools` | `true` | 全局工具呼叫開關 |
 
 #### 函數
@@ -352,12 +353,14 @@ flowchart TD
 ### `cli_monitor.go` — 終端機監控器
 
 - 將所有 USER / ASSISTANT 訊息以帶時間戳的格式輸出到 `os.Stdout`
+- **設計哲學**：作為前台使用者介面 (UI)，與後台系統日誌 (`stderr`) 分離，方便 stdout/stderr 重導向分流
 - 使用 ANSI 顏色碼標示時間戳
 
 ### `logger.go` — 全局日誌系統
 
-- `Startup()`：打印 ASCII Banner、設置全局 `log` 前綴格式
-- 劫持 Go 標準 `log` 輸出格式
+- `SetupSlog(levelStr)`：初始化全局 `slog` 實例，配置 `CustomHandler` 輸出至 `os.Stderr`
+- **統一格式**：`[YYYY-MM-DD HH:MM:SS] [LEVEL] Message key=value`，與 Monitor 風格一致且機器可讀
+- **日誌級別**：支援 `debug` (詳細), `info` (標準), `warn`, `error`，由 `system.json` 控制
 
 ---
 

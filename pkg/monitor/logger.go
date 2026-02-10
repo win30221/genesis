@@ -1,40 +1,111 @@
 package monitor
 
 import (
+	"bytes"
+	"context"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"os"
+	"strings"
 	"time"
 )
 
-// LogConfig defines the behavioral parameters for the global system logger,
-// including time formatting and output destination.
-type LogConfig struct {
-	TimeFormat string    // Layout for timestamps (Go time.Format style)
-	Prefix     string    // Static string prepended to every log line
-	Output     io.Writer // Destination for log bytes (defaults to os.Stderr)
+// CustomHandler implements slog.Handler to provide [TIME] [LEVEL] format
+type CustomHandler struct {
+	w     io.Writer
+	opts  slog.HandlerOptions
+	attrs []slog.Attr
 }
 
-// DefaultLogConfig returns default configuration
-func DefaultLogConfig() LogConfig {
-	return LogConfig{
-		TimeFormat: "2006-01-02 15:04:05",
-		Prefix:     "",
-		Output:     os.Stderr,
+func NewCustomHandler(w io.Writer, opts slog.HandlerOptions) *CustomHandler {
+	return &CustomHandler{
+		w:    w,
+		opts: opts,
 	}
 }
 
-// customLogger implements io.Writer to intercept and format logs
-type customLogger struct {
-	config LogConfig
+func (h *CustomHandler) Enabled(ctx context.Context, level slog.Level) bool {
+	return level >= h.opts.Level.Level()
 }
 
-func (l *customLogger) Write(p []byte) (n int, err error) {
-	timestamp := time.Now().Format(l.config.TimeFormat)
-	// Use Fprintf to write formatted logs
-	_, err = fmt.Fprintf(l.config.Output, "%s[%s] %s", l.config.Prefix, timestamp, p)
-	return len(p), err
+func (h *CustomHandler) Handle(ctx context.Context, r slog.Record) error {
+	buf := bytes.NewBuffer(nil)
+
+	// Format: [2006-01-02 15:04:05] [LEVEL] Message
+	fmt.Fprintf(buf, "[%s] [%s] %s",
+		r.Time.Format("2006-01-02 15:04:05"),
+		r.Level,
+		r.Message,
+	)
+
+	// Append attributes
+	// 1. Stored attributes (from WithAttrs)
+	for _, a := range h.attrs {
+		h.appendAttr(buf, a)
+	}
+
+	// 2. Record attributes
+	r.Attrs(func(a slog.Attr) bool {
+		h.appendAttr(buf, a)
+		return true
+	})
+
+	buf.WriteString("\n")
+
+	h.w.Write(buf.Bytes())
+	return nil
+}
+
+func (h *CustomHandler) appendAttr(buf *bytes.Buffer, a slog.Attr) {
+	buf.WriteString(" ")
+	buf.WriteString(a.Key)
+	buf.WriteString("=")
+
+	// Simple value formatting
+	val := a.Value.Resolve()
+	switch val.Kind() {
+	case slog.KindString:
+		fmt.Fprintf(buf, "%q", val.String())
+	case slog.KindTime:
+		buf.WriteString(val.Time().Format(time.RFC3339))
+	default:
+		fmt.Fprintf(buf, "%v", val.Any())
+	}
+}
+
+func (h *CustomHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	return &CustomHandler{
+		w:     h.w,
+		opts:  h.opts,
+		attrs: append(h.attrs, attrs...),
+	}
+}
+
+func (h *CustomHandler) WithGroup(name string) slog.Handler {
+	// Grouping not fully supported in this simple implementation
+	return h
+}
+
+// SetupSlog initializes the global slog logger with the CustomHandler.
+func SetupSlog(levelStr string) {
+	var level slog.Level
+	switch strings.ToLower(levelStr) {
+	case "debug":
+		level = slog.LevelDebug
+	case "warn", "warning":
+		level = slog.LevelWarn
+	case "error":
+		level = slog.LevelError
+	default:
+		level = slog.LevelInfo
+	}
+
+	handler := NewCustomHandler(os.Stderr, slog.HandlerOptions{
+		Level: level,
+	})
+
+	slog.SetDefault(slog.New(handler))
 }
 
 // PrintBanner prints the startup banner
@@ -48,21 +119,4 @@ func PrintBanner() {
  ╚═════╝ ╚══════╝╚═╝  ╚═══╝╚══════╝╚══════╝╚═╝╚══════╝
 `
 	fmt.Println(banner)
-}
-
-// SetupSystemLogger configures global system logging format
-func SetupSystemLogger(config LogConfig) {
-	// Remove default flags (e.g., default timestamp)
-	log.SetFlags(0)
-
-	// Set custom writer
-	logger := &customLogger{config: config}
-	log.SetOutput(logger)
-}
-
-// Startup orchestrates the standard system initialization sequence,
-// including printing the ASCII banner and setting up the global logger.
-func Startup() {
-	PrintBanner()
-	SetupSystemLogger(DefaultLogConfig())
 }

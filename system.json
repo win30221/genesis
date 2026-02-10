@@ -8,6 +8,7 @@
     "thinking_token_delay_ms": 200,
     "telegram_message_limit": 4000,
     "show_thinking": true,
-    "debug_chunks": false,
+    "debug_chunks": true,
+    "log_level": "debug",
     "enable_tools": true
 }

@@ -3,8 +3,7 @@ package llm
 import (
 	"context"
 	"fmt"
-	"log"
-	"strings"
+	"log/slog"
 	"time"
 
 	jsoniter "github.com/json-iterator/go"
@@ -30,8 +29,7 @@ type LLMUsage struct {
 	StopReason       string `json:"stop_reason,omitempty"`       // The physical reason why generation stopped (e.g., "stop", "length")
 }
 
-// LogUsage formats and prints the LLMUsage metrics to the standard logger
-// using a structured Markdown table for enhanced readability in console/logs.
+// LogUsage outputs usage statistics as a single structured log line.
 // Parameters:
 //   - model: The name of the LLM model used (for context in logs).
 //   - usage: The pointer to the usage metrics to be logged.
@@ -40,26 +38,20 @@ func LogUsage(model string, usage *LLMUsage) {
 		return
 	}
 
-	var sb strings.Builder
-	fmt.Fprintf(&sb, "\n> ### 📊 Full Usage Statistics (%s)\n", model)
-	fmt.Fprintf(&sb, "> | Item | Token Count | Details |\n")
-	fmt.Fprintf(&sb, "> | :--- | :--- | :--- |\n")
-	fmt.Fprintf(&sb, "> | **Prompt** | %d | %s |\n", usage.PromptTokens, usage.PromptDetail)
-	fmt.Fprintf(&sb, "> | **Response** | %d | %s |\n", usage.CompletionTokens, usage.CompletionDetail)
-	fmt.Fprintf(&sb, "> | **Total** | **%d** | - |\n", usage.TotalTokens)
-	fmt.Fprintf(&sb, "> | **Thoughts** | %d | - |\n", usage.ThoughtsTokens)
-
+	attrs := []any{
+		"model", model,
+		"prompt", usage.PromptTokens,
+		"completion", usage.CompletionTokens,
+		"total", usage.TotalTokens,
+		"thoughts", usage.ThoughtsTokens,
+	}
 	if usage.StopReason != "" {
-		fmt.Fprintf(&sb, "> | **Stop Reason** | %s | - |\n", usage.StopReason)
+		attrs = append(attrs, "stop", usage.StopReason)
 	}
-
 	if usage.CachedTokens > 0 {
-		fmt.Fprintf(&sb, "> | **Cached** | %d | - |\n", usage.CachedTokens)
+		attrs = append(attrs, "cached", usage.CachedTokens)
 	}
-
-	fmt.Fprint(&sb, "> ---")
-
-	log.Println(sb.String())
+	slog.Info("Usage", attrs...)
 }
 
 // LLMClient serves as the primary abstraction for different LLM providers
@@ -107,7 +99,7 @@ func (f *FallbackClient) StreamChat(ctx context.Context, messages []Message, ava
 	var lastErr error
 	for i, client := range f.Clients {
 		if i > 0 {
-			log.Printf("⚠️ Previous provider failed. Trying fallback provider #%d...", i+1)
+			slog.Warn("Previous provider failed, trying fallback", "provider", i+1)
 		}
 
 		// Use the configured retry count, at least 1 attempt if set to 0
@@ -118,7 +110,7 @@ func (f *FallbackClient) StreamChat(ctx context.Context, messages []Message, ava
 
 		for retry := 1; retry <= maxRetries; retry++ {
 			if retry > 1 {
-				log.Printf("🔄 Retrying provider #%d (attempt %d/%d)...", i+1, retry, maxRetries)
+				slog.Warn("Retrying provider", "provider", i+1, "attempt", retry, "max", maxRetries)
 				// Wait briefly before retrying
 				select {
 				case <-ctx.Done():
@@ -140,7 +132,7 @@ func (f *FallbackClient) StreamChat(ctx context.Context, messages []Message, ava
 			}
 
 			// Not a transient error, or max retries reached
-			log.Printf("❌ Provider #%d failed: %v", i+1, err)
+			slog.Error("Provider failed", "provider", i+1, "error", err)
 			break
 		}
 	}

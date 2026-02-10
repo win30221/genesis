@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -18,7 +18,8 @@ func main() {
 	// 初始化 Ollama 客戶端
 	client, err := api.ClientFromEnvironment()
 	if err != nil {
-		log.Fatal(err)
+		slog.Error("Fatal error", "error", err)
+		return
 	}
 
 	model := "qwen3:30b" // 你想用的 Ollama 模型
@@ -71,7 +72,7 @@ func main() {
 		// 寫入檔案
 		err = os.WriteFile(fileName, jsonData, 0644)
 		if err != nil {
-			log.Printf("存檔失敗: %v", err)
+			slog.Error("Failed to write file", "error", err)
 		} else {
 			fmt.Printf("已存入: %s\n", fileName)
 		}
@@ -85,7 +86,8 @@ func main() {
 	})
 
 	if err != nil {
-		log.Fatalf("錯誤: %v", err)
+		slog.Error("Chat error", "error", err)
+		return
 	}
 
 	fmt.Printf("\n=== 完成！共收到 %d 個封包 ===\n", chunkCount)

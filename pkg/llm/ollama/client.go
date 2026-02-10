@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 	"genesis/pkg/llm"
-	"log"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
@@ -76,7 +76,7 @@ func NewOllamaClient(model string, baseURL string, options map[string]any) (*Oll
 		return nil, err
 	}
 
-	log.Printf("✅ [Ollama] Initialized client for %s (BaseURL: %s)", model, baseURL)
+	slog.Info("Ollama client initialized", "model", model, "base_url", baseURL)
 
 	return &OllamaClient{
 		client:  client,
@@ -102,18 +102,18 @@ func (o *OllamaClient) StreamChat(ctx context.Context, messages []llm.Message, a
 		// Convert tools (using JSON conversion to work around SDK type mismatch issues)
 		var ollamaTools []api.Tool
 		if availableTools != nil {
-			log.Printf("[Ollama] 🛠️ Converting tools of type: %T", availableTools)
+			slog.Debug("Converting tools", "provider", "ollama", "type", fmt.Sprintf("%T", availableTools))
 			rawB, err := json.Marshal(availableTools)
 			if err != nil {
-				log.Printf("[Ollama] ❌ Failed to marshal tools: %v", err)
+				slog.Error("Failed to marshal tools", "provider", "ollama", "error", err)
 			} else {
 				if err := json.Unmarshal(rawB, &ollamaTools); err != nil {
-					log.Printf("[Ollama] ❌ Failed to unmarshal to api.Tool: %v, data: %s", err, string(rawB))
+					slog.Error("Failed to unmarshal to api.Tool", "provider", "ollama", "error", err)
 				}
 			}
 		}
 
-		log.Printf("[Ollama] 🏗️ Tools available: %d", len(ollamaTools))
+		slog.Debug("Tools available", "provider", "ollama", "count", len(ollamaTools))
 
 		streamVal := true
 		req := &api.ChatRequest{
@@ -137,7 +137,7 @@ func (o *OllamaClient) StreamChat(ctx context.Context, messages []llm.Message, a
 			debugDir := filepath.Join("debug", "chunks", "ollama")
 			_ = os.MkdirAll(debugDir, 0755)
 			debugFilePath := filepath.Join(debugDir, fmt.Sprintf("%s.log", debugID))
-			log.Printf("[Ollama] 🛠️ Debug mode ON. Chunks will be appended to: %s", debugFilePath)
+			slog.Debug("Debug mode ON", "provider", "ollama", "file", debugFilePath)
 			if f, err := os.OpenFile(debugFilePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644); err == nil {
 				debugFile = f
 				defer debugFile.Close()
@@ -181,7 +181,7 @@ func (o *OllamaClient) StreamChat(ctx context.Context, messages []llm.Message, a
 				for _, tc := range resp.Message.ToolCalls {
 					argsB, err := json.Marshal(tc.Function.Arguments)
 					if err != nil {
-						log.Printf("[Ollama] ⚠️ Failed to marshal tool call arguments: %v, original data: %+v", err, tc.Function.Arguments)
+						slog.Warn("Failed to marshal tool call arguments", "provider", "ollama", "error", err)
 						argsB = []byte("{}")
 					}
 					toolCalls = append(toolCalls, llm.ToolCall{
@@ -192,7 +192,7 @@ func (o *OllamaClient) StreamChat(ctx context.Context, messages []llm.Message, a
 							Arguments: string(argsB),
 						},
 					})
-					log.Printf("[Ollama] 🛠️ Tool Call: %s(%s) id: %s", tc.Function.Name, string(argsB), tc.ID)
+					slog.Debug("Tool call", "provider", "ollama", "name", tc.Function.Name, "args", string(argsB), "id", tc.ID)
 				}
 				chunkCh <- llm.StreamChunk{
 					ToolCalls: toolCalls,
@@ -211,7 +211,7 @@ func (o *OllamaClient) StreamChat(ctx context.Context, messages []llm.Message, a
 
 				// Truncation is only logged; Handler manages continuation
 				if resp.DoneReason == llm.StopReasonLength {
-					log.Printf("[Ollama] ⚠️ Response truncated due to length (num_predict).")
+					slog.Warn("Response truncated due to length", "provider", "ollama")
 				}
 
 				chunkCh <- llm.NewFinalChunk(resp.DoneReason, usage)
@@ -222,7 +222,7 @@ func (o *OllamaClient) StreamChat(ctx context.Context, messages []llm.Message, a
 		})
 
 		if err != nil {
-			log.Printf("❌ Ollama stream error (%s) after %d chunks: %v", o.model, chunkIdx, err)
+			slog.Error("Stream error", "provider", "ollama", "model", o.model, "chunks", chunkIdx, "error", err)
 			if !started {
 				// Notify initialization waiter
 				select {
@@ -299,19 +299,19 @@ func (o *OllamaClient) convertMessages(messages []llm.Message) []api.Message {
 				// Convert JSON string back to map
 				var args map[string]any
 				if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
-					log.Printf("[Ollama] ⚠️ Failed to unmarshal tool arguments for history: %v", err)
+					slog.Warn("Failed to unmarshal tool arguments for history", "provider", "ollama", "error", err)
 				}
 
 				// Manually create api.ToolCall to ensure Arguments are handled correctly
 				// api.ToolCallFunctionArguments supports unmarshaling from map
 				argBytes, err := json.Marshal(args)
 				if err != nil {
-					log.Printf("[Ollama] ⚠️ Failed to marshal tool arguments for history: %v, original data: %+v", err, args)
+					slog.Warn("Failed to marshal tool arguments for history", "provider", "ollama", "error", err)
 					argBytes = []byte("{}")
 				}
 				var apiArgs api.ToolCallFunctionArguments
 				if err := json.Unmarshal(argBytes, &apiArgs); err != nil {
-					log.Printf("[Ollama] ⚠️ Failed to unmarshal to api.ToolCallFunctionArguments: %v, JSON string: %s", err, string(argBytes))
+					slog.Warn("Failed to unmarshal to api.ToolCallFunctionArguments", "provider", "ollama", "error", err)
 				}
 
 				ollamaToolCalls = append(ollamaToolCalls, api.ToolCall{

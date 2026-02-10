@@ -5,7 +5,7 @@ package os
 import (
 	"fmt"
 	"genesis/pkg/tools"
-	"log"
+	"log/slog"
 	"os"
 	"os/exec"
 	"strings"
@@ -56,7 +56,7 @@ func (w *DarwinWorker) Execute(req tools.ActionRequest) (*tools.ActionResponse, 
 }
 
 func (w *DarwinWorker) runCommand(cmdStr string) (string, error) {
-	log.Printf("[OS/Worker] 🍎 Executing in [%s]: %s", w.workingDir, cmdStr)
+	slog.Info("Executing command", "dir", w.workingDir, "command", cmdStr)
 
 	// Use zsh for macOS
 	// We want to persist directory changes, but since each command is isolated,

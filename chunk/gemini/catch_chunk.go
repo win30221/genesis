@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 	"path/filepath"
 
@@ -20,7 +20,8 @@ func main() {
 		Backend: genai.BackendGeminiAPI,
 	})
 	if err != nil {
-		log.Fatal(err)
+		slog.Error("Fatal error", "error", err)
+		return
 	}
 
 	// 建立 debug 資料夾
@@ -55,7 +56,7 @@ func main() {
 	chunkCount := 0
 	for chunk, err := range stream {
 		if err != nil {
-			log.Printf("錯誤: %v", err)
+			slog.Error("Stream error", "error", err)
 			return
 		}
 
@@ -68,7 +69,7 @@ func main() {
 		// 寫入檔案
 		err = os.WriteFile(fileName, jsonData, 0644)
 		if err != nil {
-			log.Printf("存檔失敗: %v", err)
+			slog.Error("Failed to write file", "error", err)
 		} else {
 			fmt.Printf("已存入: %s\n", fileName)
 		}

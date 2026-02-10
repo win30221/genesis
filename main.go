@@ -10,29 +10,33 @@ import (
 	"genesis/pkg/llm"
 	_ "genesis/pkg/llm/autoload" // Auto-register LLM Providers
 	"genesis/pkg/monitor"
-	"log"
+	"log/slog"
+	"os"
 	"os/signal"
 	"syscall"
 )
 
 func main() {
-	// --- 0. Setup Environment ---
-	// Initialize logging, banner, and get the monitor instance
-	m := monitor.SetupEnvironment()
-
-	log.Println("==========================================")
-
-	// --- 1. Load Configuration ---
+	// --- 0. Load Configuration (needed for log level) ---
 	cfg, sysCfg, err := config.Load()
 	if err != nil {
-		// Fail Fast: mandatory config is missing or invalid
-		log.Fatalf("❌ Critical Error: Failed to load configuration: %v\n", err)
+		// Banner + default logger for fatal startup error
+		monitor.PrintBanner()
+		monitor.SetupSlog("info")
+		slog.Error("Failed to load configuration", "error", err)
+		os.Exit(1)
 	}
+
+	// --- 0a. Setup Environment (logger + monitor) ---
+	m := monitor.SetupEnvironment(sysCfg.LogLevel)
+
+	slog.Info("==========================================")
 
 	// --- 2. LLM Setup ---
 	client, err := llm.NewFromConfig(cfg.LLM, sysCfg)
 	if err != nil {
-		log.Fatalf("❌ Failed to init LLM client: %v\n", err)
+		slog.Error("Failed to init LLM client", "error", err)
+		os.Exit(1)
 	}
 
 	// --- 2a. Chat History (State) ---
@@ -51,7 +55,8 @@ func main() {
 		Build()
 
 	if err != nil {
-		log.Fatalf("Failed to build gateway: %v\n", err)
+		slog.Error("Failed to build gateway", "error", err)
+		os.Exit(1)
 	}
 
 	// Create context listening for system signals
@@ -60,9 +65,9 @@ func main() {
 
 	// Wait for signal
 	<-ctx.Done()
-	log.Println("\nReceived shutdown signal. Stopping services...")
+	slog.Info("Received shutdown signal. Stopping services...")
 
 	// Perform cleanup
 	gw.StopAll()
-	log.Println("Bye!")
+	slog.Info("Bye!")
 }

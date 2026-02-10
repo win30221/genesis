@@ -30,10 +30,12 @@ type Monitor interface {
 
 // SetupEnvironment encapsulates the initialization of the system logging
 // environment and the creation of a default CLI monitor instance.
-// This simplifies the main bootstrap sequence.
-func SetupEnvironment() Monitor {
-	// Initialize global logger and print banner
-	Startup()
+// logLevel controls the minimum severity for slog output (e.g., "debug", "info").
+func SetupEnvironment(logLevel string) Monitor {
+	// Print ASCII banner before logger takes over stderr
+	PrintBanner()
+	// Initialize global slog logger
+	SetupSlog(logLevel)
 	// Return the default implementation for terminal visualization
 	return NewCLIMonitor()
 }

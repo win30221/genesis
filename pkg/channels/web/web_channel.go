@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"genesis/pkg/gateway"
 	"genesis/pkg/llm"
-	"log"
+	"log/slog"
 	"net/http"
 	"sync"
 
@@ -78,11 +78,11 @@ func (c *WebChannel) Start(ctx gateway.ChannelContext) error {
 		Handler: mux,
 	}
 
-	log.Printf("🌐 Web API listening on :%d/ws", c.config.Port)
+	slog.Info("Web API listening", "port", c.config.Port)
 
 	go func() {
 		if err := c.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Printf("❌ Web API server error: %v", err)
+			slog.Error("Web API server error", "error", err)
 		}
 	}()
 
@@ -158,7 +158,7 @@ func (c *WebChannel) Stream(session gateway.SessionContext, blocks <-chan llm.Co
 
 		jsonData, err := json.Marshal(msg)
 		if err != nil {
-			log.Printf("❌ Failed to marshal stream block: %v", err)
+			slog.Error("Failed to marshal stream block", "error", err)
 			continue
 		}
 
@@ -176,7 +176,7 @@ func (c *WebChannel) Stream(session gateway.SessionContext, blocks <-chan llm.Co
 func (c *WebChannel) handleWebSocket(w http.ResponseWriter, r *http.Request, ctx gateway.ChannelContext) {
 	rawConn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
-		log.Println("WS Upgrade failed:", err)
+		slog.Error("WS Upgrade failed", "error", err)
 		return
 	}
 
@@ -200,7 +200,7 @@ func (c *WebChannel) handleWebSocket(w http.ResponseWriter, r *http.Request, ctx
 		}
 		historyJSON, err := json.Marshal(historyData)
 		if err != nil {
-			log.Printf("❌ Failed to marshal history: %v", err)
+			slog.Error("Failed to marshal history", "error", err)
 		} else {
 			conn.WriteMessage(websocket.TextMessage, historyJSON)
 		}
@@ -238,7 +238,7 @@ func (c *WebChannel) handleWebSocket(w http.ResponseWriter, r *http.Request, ctx
 				// Base64 decode
 				data, err := base64.StdEncoding.DecodeString(img.Data)
 				if err != nil {
-					log.Printf("❌ Failed to decode base64 image %s: %v", img.Name, err)
+					slog.Error("Failed to decode base64 image", "name", img.Name, "error", err)
 					continue
 				}
 
@@ -247,7 +247,7 @@ func (c *WebChannel) handleWebSocket(w http.ResponseWriter, r *http.Request, ctx
 					MimeType: img.Mime,
 					Data:     data,
 				})
-				log.Printf("📸 Received image: %s (%d bytes)", img.Name, len(data))
+				slog.Debug("Received image", "name", img.Name, "bytes", len(data))
 			}
 		} else {
 			// Fallback: treat as plain text (backward compatibility)

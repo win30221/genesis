@@ -5,7 +5,7 @@ import (
 	"genesis/pkg/gateway"
 	"genesis/pkg/llm"
 	"io"
-	"log"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -50,7 +50,7 @@ func NewTelegramChannel(cfg TelegramConfig, msgLimit int, timeoutMs int) (*Teleg
 		return nil, fmt.Errorf("failed to create telegram bot: %w", err)
 	}
 
-	log.Printf("🤖 Authorized on account %s", bot.Self.UserName)
+	slog.Info("Telegram bot authorized", "username", bot.Self.UserName)
 
 	return &TelegramChannel{
 		config:       cfg,
@@ -116,7 +116,7 @@ func (t *TelegramChannel) Start(ctx gateway.ChannelContext) error {
 				if file, err := t.downloadPhoto(photoID); err == nil {
 					files = append(files, *file)
 				} else {
-					log.Printf("❌ Photo download failed: %v", err)
+					slog.Error("Photo download failed", "error", err)
 				}
 			}
 
@@ -214,7 +214,7 @@ func (t *TelegramChannel) handleMediaGroup(ctx gateway.ChannelContext, groupID s
 						if file, err := t.downloadPhoto(id); err == nil {
 							files[index] = *file
 						} else {
-							log.Printf("❌ MediaGroup download failed (id: %s): %v", id, err)
+							slog.Error("MediaGroup download failed", "file_id", id, "error", err)
 						}
 					}(i, pid)
 				}
@@ -235,8 +235,7 @@ func (t *TelegramChannel) handleMediaGroup(ctx gateway.ChannelContext, groupID s
 					Files:   successfulFiles,
 				}
 				ctx.OnMessage(t.ID(), msg)
-				log.Printf("📦 Sent MediaGroup %s (%d/%d images, content len: %d)",
-					groupID, len(successfulFiles), len(finalBuf.photoIDs), len(finalBuf.content))
+				slog.Info("MediaGroup sent", "group", groupID, "images", fmt.Sprintf("%d/%d", len(successfulFiles), len(finalBuf.photoIDs)), "content_len", len(finalBuf.content))
 			} else {
 				t.mu.Unlock()
 			}
@@ -345,7 +344,7 @@ func (t *TelegramChannel) Stream(session gateway.SessionContext, blocks <-chan l
 			if thinkingBuf.Len() > 0 && !thinkingSent {
 				thinkingMsg := "💭 Reasoning process:\n\n" + thinkingBuf.String()
 				if err := t.Send(session, thinkingMsg); err != nil {
-					log.Printf("❌ Failed to send thinking message: %v", err)
+					slog.Error("Failed to send thinking", "error", err)
 				}
 				thinkingSent = true
 			}
@@ -355,12 +354,12 @@ func (t *TelegramChannel) Stream(session gateway.SessionContext, blocks <-chan l
 			if textBuf.Len() > 0 {
 				replyMsg := "🤖 Assistant response:\n\n" + textBuf.String()
 				if err := t.Send(session, replyMsg); err != nil {
-					log.Printf("❌ Failed to send buffered text before image: %v", err)
+					slog.Error("Failed to send text before image", "error", err)
 				}
 				textBuf.Reset()
 			}
 			if err := t.sendPhoto(session, block); err != nil {
-				log.Printf("❌ Failed to send photo in stream: %v", err)
+				slog.Error("Failed to send photo", "error", err)
 			}
 		}
 	}
@@ -369,7 +368,7 @@ func (t *TelegramChannel) Stream(session gateway.SessionContext, blocks <-chan l
 	if thinkingBuf.Len() > 0 && !thinkingSent {
 		thinkingMsg := "💭 Reasoning process:\n\n" + thinkingBuf.String()
 		if err := t.Send(session, thinkingMsg); err != nil {
-			log.Printf("❌ Failed to send thinking message: %v", err)
+			slog.Error("Failed to send thinking", "error", err)
 		}
 	}
 

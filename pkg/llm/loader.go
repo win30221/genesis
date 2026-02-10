@@ -2,7 +2,7 @@ package llm
 
 import (
 	"fmt"
-	"log"
+	"log/slog"
 	"time"
 
 	"genesis/pkg/config"
@@ -40,17 +40,17 @@ func NewFromConfig(rawLLM jsoniter.RawMessage, system *config.SystemConfig) (LLM
 	}
 
 	for _, group := range groups {
-		log.Printf("Loading LLM Group: %s (%d models)", group.Type, len(group.Models))
+		slog.Info("Loading LLM group", "type", group.Type, "models", len(group.Models))
 
 		factory, ok := GetProviderFactory(group.Type)
 		if !ok {
-			log.Printf("Unknown provider type: %s", group.Type)
+			slog.Warn("Unknown provider type", "type", group.Type)
 			continue
 		}
 
 		clients, err := factory.Create(group, system)
 		if err != nil {
-			log.Printf("Failed to create clients for %s: %v", group.Type, err)
+			slog.Error("Failed to create clients", "type", group.Type, "error", err)
 			continue
 		}
 
@@ -61,7 +61,7 @@ func NewFromConfig(rawLLM jsoniter.RawMessage, system *config.SystemConfig) (LLM
 		return nil, fmt.Errorf("no LLM clients could be initialized")
 	}
 
-	log.Printf("✅ Total atomic LLM clients initialized: %d", len(allAtomicClients))
+	slog.Info("LLM clients initialized", "count", len(allAtomicClients))
 
 	// If only one, return it directly
 	if len(allAtomicClients) == 1 {

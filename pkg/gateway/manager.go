@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"genesis/pkg/llm"
 	"genesis/pkg/monitor"
-	"log"
+	"log/slog"
 	"strings"
 	"sync"
 	"time"
@@ -79,7 +79,7 @@ func (g *GatewayManager) StartAll() error {
 	defer g.mu.RUnlock()
 
 	for id, c := range g.channels {
-		log.Printf("Starting channel: %s", id)
+		slog.Info("Starting channel", "id", id)
 		// Inject self as the context for receiving messages from the channel
 		if err := c.Start(g); err != nil {
 			return fmt.Errorf("failed to start channel %s: %w", id, err)
@@ -95,9 +95,9 @@ func (g *GatewayManager) StopAll() {
 	defer g.mu.RUnlock()
 
 	for id, c := range g.channels {
-		log.Printf("Stopping channel: %s", id)
+		slog.Info("Stopping channel", "id", id)
 		if err := c.Stop(); err != nil {
-			log.Printf("Error stopping channel %s: %v", id, err)
+			slog.Error("Error stopping channel", "id", id, "error", err)
 		}
 	}
 }
@@ -122,7 +122,7 @@ func (g *GatewayManager) SendSignal(session SessionContext, signal string) error
 
 	// Verify if the channel implementation supports control signaling
 	if sc, ok := c.(SignalingChannel); ok {
-		log.Printf("[Gateway] -> Signal to %s (%s): %s", session.ChannelID, session.Username, signal)
+		slog.Debug("Signal", "channel", session.ChannelID, "user", session.Username, "signal", signal)
 		return sc.SendSignal(session, signal)
 	}
 
@@ -170,8 +170,7 @@ func (g *GatewayManager) StreamReply(session SessionContext, blocks <-chan llm.C
 // messages from channels, logs them, broadcasts to monitor, and forwards to handler.
 func (g *GatewayManager) OnMessage(channelID string, msg *UnifiedMessage) {
 	// Structured logging for inbound user communications
-	log.Printf("[Gateway] <- Received from %s [%s(%s)]: %s",
-		channelID, msg.Session.Username, msg.Session.UserID, msg.Content)
+	slog.Debug("Message received", "channel", channelID, "user", msg.Session.Username, "user_id", msg.Session.UserID, "content", msg.Content)
 
 	// Broadcast the user message to the monitor for real-time observation
 	if g.monitor != nil {
@@ -188,6 +187,6 @@ func (g *GatewayManager) OnMessage(channelID string, msg *UnifiedMessage) {
 		// Forward message to the business logic handler (e.g., ChatHandler)
 		g.msgHandler(msg)
 	} else {
-		log.Println("[Gateway] Warning: No message handler set")
+		slog.Warn("No message handler set")
 	}
 }
