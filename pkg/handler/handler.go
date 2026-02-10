@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"crypto/rand"
+	"encoding/base64"
 	"fmt"
 	"genesis/pkg/config"
 	"genesis/pkg/gateway"
@@ -223,41 +224,55 @@ func (h *ChatHandler) processLLMStream(msg *gateway.UnifiedMessage) llm.Message 
 		h.history.Add(assistantMsg)
 
 		for _, tc := range assistantMsg.ToolCalls {
+			var resultBlocks []llm.ContentBlock
+			success := false
+
 			tool, ok := h.toolRegistry.Get(tc.Name)
 			if !ok {
+				errMsg := fmt.Sprintf("Error: Unknown tool '%s'", tc.Name)
 				slog.Error("Unknown tool call", "name", tc.Name)
-				continue
+				resultBlocks = append(resultBlocks, llm.NewTextBlock(errMsg))
+			} else {
+				// Parse parameters
+				var args map[string]any
+				if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
+					errMsg := fmt.Sprintf("Error: Failed to parse tool arguments: %v", err)
+					slog.Error("Failed to parse tool args", "error", err)
+					resultBlocks = append(resultBlocks, llm.NewTextBlock(errMsg))
+				} else {
+					// Execute tool
+					slog.Info("Executing tool", "name", tc.Name, "args", args)
+					res, err := tool.Execute(args)
+					if err != nil {
+						errMsg := fmt.Sprintf("Error: Tool execution failed: %v", err)
+						slog.Error("Tool execution error", "error", err)
+						resultBlocks = append(resultBlocks, llm.NewTextBlock(errMsg))
+					} else {
+						success = true
+						// Convert tools.ContentBlock to llm.ContentBlock
+						for _, b := range res.Content {
+							if b.Type == "text" {
+								resultBlocks = append(resultBlocks, llm.NewTextBlock(b.Text))
+							} else if b.Type == "image" {
+								data, _ := base64.StdEncoding.DecodeString(b.Data)
+								resultBlocks = append(resultBlocks, llm.NewImageBlock(data, "image/png"))
+							}
+						}
+					}
+				}
 			}
 
-			// Parse parameters
-			var args map[string]any
-			if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
-				slog.Error("Failed to parse tool args", "error", err)
-				continue
-			}
-
-			// Execute tool
-			slog.Info("Executing tool", "name", tc.Name, "args", args)
-			res, err := tool.Execute(args)
-			if err != nil {
-				slog.Error("Tool execution error", "error", err)
-				continue
-			}
-
-			// Convert results to llm.Message (role: tool)
+			// MUST add tool result to history to avoid OpenAI 400 error
 			toolResMsg := llm.Message{
 				Role:       "tool",
 				ToolCallID: tc.ID,
-				Content:    convertToolResult(res),
+				Content:    resultBlocks,
 			}
-
 			h.history.Add(toolResMsg)
 
 			// 2. Use independent stream to send tool results to frontend (Role: tool/system)
-			// First send signal to switch role, making it display in system style (no avatar, centered)
 			h.gw.SendSignal(msg.Session, "role:system")
 
-			// This ensures tool results (like screenshots) are displayed separately from thinking and subsequent text
 			resCh := make(chan llm.ContentBlock, len(toolResMsg.Content))
 			for _, b := range toolResMsg.Content {
 				resCh <- b
@@ -266,6 +281,7 @@ func (h *ChatHandler) processLLMStream(msg *gateway.UnifiedMessage) llm.Message 
 			if err := h.gw.StreamReply(msg.Session, resCh); err != nil {
 				slog.Error("Failed to stream tool result", "error", err)
 			}
+			_ = success // Keep track if needed later
 		}
 
 		// safeClose already called before recursion
@@ -335,6 +351,9 @@ func (h *ChatHandler) collectChunks(session gateway.SessionContext, chunkCh <-ch
 	var textContent string
 	var thinkingContent string
 	var errorContent string
+	var toolCalls []llm.ToolCall
+	var lastUsage *llm.LLMUsage
+	var lastError error
 	firstChunkReceived := false
 
 	// Phase 1: Wait for first chunk or trigger "thinking" timer
@@ -347,6 +366,7 @@ func (h *ChatHandler) collectChunks(session gateway.SessionContext, chunkCh <-ch
 		timerChan = thinkingTimer.C
 	}
 
+Phase1Loop:
 	for !firstChunkReceived {
 		select {
 		case chunk, ok := <-chunkCh:
@@ -362,16 +382,21 @@ func (h *ChatHandler) collectChunks(session gateway.SessionContext, chunkCh <-ch
 			}
 			// Handle first chunk
 			textContent, thinkingContent, errorContent = h.processChunk(chunk, textContent, thinkingContent, errorContent, blockCh)
+			if len(chunk.ToolCalls) > 0 {
+				toolCalls = append(toolCalls, chunk.ToolCalls...)
+			}
+			if chunk.Usage != nil {
+				lastUsage = chunk.Usage
+			}
+			if chunk.IsFinal {
+				break Phase1Loop
+			}
 
 		case <-timerChan:
 			h.gw.SendSignal(session, "thinking")
 			timerChan = nil // Send only once
 		}
 	}
-
-	var toolCalls []llm.ToolCall
-	var lastUsage *llm.LLMUsage
-	var lastError error
 
 	// Phase 2: Process remaining chunks
 	for chunk := range chunkCh {

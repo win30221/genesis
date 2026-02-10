@@ -332,7 +332,7 @@ func (c *Client) convertMessages(messages []llm.Message) []responses.ResponseInp
 					tc.Name,
 				))
 			}
-		case "tool_result":
+		case "tool", "tool_result":
 			// Tool result
 			items = append(items, responses.ResponseInputItemParamOfFunctionCallOutput(
 				m.ToolCallID,

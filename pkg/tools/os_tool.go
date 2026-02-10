@@ -114,9 +114,13 @@ func (t *OSTool) Parameters() map[string]any {
 			"description": "Name of the action to execute",
 			"enum":        t.getActionNames(),
 		},
+		"command": map[string]any{
+			"type":        "string",
+			"description": "Command to execute (for 'run_command' action, e.g., 'dir', 'ls -la')",
+		},
 		"params": map[string]any{
 			"type":        "object",
-			"description": "Action parameters (dependent on action)",
+			"description": "[Deprecated] Action parameters object (use top-level fields like 'command' instead)",
 		},
 	}
 }
@@ -196,19 +200,28 @@ func (t *OSTool) parseAndValidateArgs(args map[string]any) (ActionSpec, map[stri
 		return ActionSpec{}, nil, fmt.Errorf("unsupported action: %s", actionName)
 	}
 
-	var params map[string]any
+	// Extract params (with backward compatibility)
+	// Priority: 1. Top-level arg; 2. Inside "params" object
+	params := make(map[string]any)
+
+	// Copy all top-level args except "action" into params
+	for k, v := range args {
+		if k != "action" && k != "params" {
+			params[k] = v
+		}
+	}
+
+	// Merge from "params" object if exists
 	if raw, ok := args["params"]; ok {
 		if p, ok := raw.(map[string]any); ok {
-			params = p
-		} else {
-			return ActionSpec{}, nil, fmt.Errorf("'params' must be an object")
+			for k, v := range p {
+				params[k] = v
+			}
 		}
-	} else {
-		params = make(map[string]any)
 	}
 
 	if spec.RequireParams && len(params) == 0 {
-		return ActionSpec{}, nil, fmt.Errorf("action '%s' requires params", actionName)
+		return ActionSpec{}, nil, fmt.Errorf("action '%s' requires parameters (e.g. 'command')", actionName)
 	}
 
 	if spec.Validate != nil {
