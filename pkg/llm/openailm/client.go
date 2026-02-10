@@ -75,6 +75,10 @@ func (c *Client) StreamChat(ctx context.Context, messages []llm.Message, availab
 		Messages: convertedMsgs,
 	}
 
+	if tools := c.convertTools(availableTools); len(tools) > 0 {
+		params.Tools = tools
+	}
+
 	go func() {
 		defer close(chunkCh)
 
@@ -349,6 +353,39 @@ func (c *Client) convertMessages(messages []llm.Message) []openai.ChatCompletion
 	}
 
 	return items
+}
+
+func (c *Client) convertTools(availableTools any) []openai.ChatCompletionToolUnionParam {
+	if availableTools == nil {
+		return nil
+	}
+
+	rawTools, ok := availableTools.([]map[string]any)
+	if !ok {
+		return nil
+	}
+
+	var tools []openai.ChatCompletionToolUnionParam
+	for _, t := range rawTools {
+		// Expecting Ollama/OpenAI format: {"type": "function", "function": {"name": "...", ...}}
+		if funcMap, ok := t["function"].(map[string]any); ok {
+			name, _ := funcMap["name"].(string)
+			desc, _ := funcMap["description"].(string)
+			params, _ := funcMap["parameters"].(map[string]any)
+
+			tools = append(tools, openai.ChatCompletionToolUnionParam{
+				OfFunction: &openai.ChatCompletionFunctionToolParam{
+					Type: "function",
+					Function: openai.FunctionDefinitionParam{
+						Name:        name,
+						Description: openai.String(desc),
+						Parameters:  params,
+					},
+				},
+			})
+		}
+	}
+	return tools
 }
 
 // normalizeStopReason converts OpenAI-specific finish_reason to
