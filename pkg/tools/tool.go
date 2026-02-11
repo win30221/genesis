@@ -35,30 +35,6 @@ type ContentBlock struct {
 	ThoughtSignature []byte `json:"thought_signature,omitempty"` // Cryptographic or provider-specific token signature
 }
 
-// Message represents a conversation message
-type Message struct {
-	Role    string             `json:"role"` // "user" or "assistant"
-	Content []ContentBlock     `json:"content"`
-	ToolUse []ToolUse          `json:"tool_use,omitempty"`
-	Results []ToolResultWithID `json:"tool_results,omitempty"`
-}
-
-// ToolUse represents a tool use request from LLM
-type ToolUse struct {
-	ID               string         `json:"id"`
-	Name             string         `json:"name"`
-	Input            map[string]any `json:"input"`
-	ThoughtSignature []byte         `json:"thought_signature,omitempty"`
-}
-
-// ToolResultWithID represents a tool result associated with an ID
-type ToolResultWithID struct {
-	ToolUseID string         `json:"tool_use_id"`
-	ToolName  string         `json:"tool_name"` // Added for Gemini support
-	Content   []ContentBlock `json:"content"`
-	Details   map[string]any `json:"details,omitempty"`
-}
-
 // ToolRegistry acts as a central inventory for all tools available to the Agent.
 // It provides helper methods to convert tool schemas into formats compatible
 // with various LLM providers (Gemini, Anthropic, Ollama).

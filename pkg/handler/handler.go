@@ -290,15 +290,13 @@ func (h *ChatHandler) processLLMStream(msg *gateway.UnifiedMessage) llm.Message 
 // Returns:
 //   - The fully aggregated message and any error encountered during consumption.
 func (h *ChatHandler) collectChunks(session gateway.SessionContext, chunkCh <-chan llm.StreamChunk, blockCh chan<- llm.ContentBlock, alreadySentThinking bool) (llm.Message, error) {
-	var textContent strings.Builder
-	var thinkingContent strings.Builder
-	var errorContent strings.Builder
-	var toolCalls []llm.ToolCall
-	var lastUsage *llm.LLMUsage
+	msg := llm.Message{
+		Role:    "assistant",
+		Content: []llm.ContentBlock{},
+	}
 	var lastError error
-	firstChunkReceived := false
 
-	// Phase 1: Wait for first chunk or trigger "thinking" timer
+	// Setup "thinking" timer
 	var thinkingTimer *time.Timer
 	var timerChan <-chan time.Time
 	if !alreadySentThinking {
@@ -308,31 +306,27 @@ func (h *ChatHandler) collectChunks(session gateway.SessionContext, chunkCh <-ch
 		timerChan = thinkingTimer.C
 	}
 
-Phase1Loop:
-	for !firstChunkReceived {
+	for {
 		select {
 		case chunk, ok := <-chunkCh:
 			if !ok {
-				return llm.Message{}, nil // Channel closed and no content
+				return msg, lastError
 			}
 			if chunk.RawError != nil {
-				return llm.Message{}, chunk.RawError
+				return msg, chunk.RawError
 			}
-			firstChunkReceived = true
+
+			// Stop the "thinking" timer if it hasn't fired yet
 			if thinkingTimer != nil {
 				thinkingTimer.Stop()
+				thinkingTimer = nil
+				timerChan = nil
 			}
-			// Handle first chunk
-			// Handle first chunk
-			h.processChunk(chunk, &textContent, &thinkingContent, &errorContent, blockCh)
-			if len(chunk.ToolCalls) > 0 {
-				toolCalls = append(toolCalls, chunk.ToolCalls...)
-			}
-			if chunk.Usage != nil {
-				lastUsage = chunk.Usage
-			}
+
+			h.processChunk(chunk, &msg, blockCh)
+
 			if chunk.IsFinal {
-				break Phase1Loop
+				return msg, lastError
 			}
 
 		case <-timerChan:
@@ -340,50 +334,6 @@ Phase1Loop:
 			timerChan = nil // Send only once
 		}
 	}
-
-	// Phase 2: Process remaining chunks
-	for chunk := range chunkCh {
-		if chunk.RawError != nil {
-			lastError = chunk.RawError
-		}
-		h.processChunk(chunk, &textContent, &thinkingContent, &errorContent, blockCh)
-
-		// Accumulate ToolCalls
-		if len(chunk.ToolCalls) > 0 {
-			toolCalls = append(toolCalls, chunk.ToolCalls...)
-		}
-
-		// Accumulate Usage
-		if chunk.Usage != nil {
-			lastUsage = chunk.Usage
-		}
-
-		if chunk.IsFinal {
-			break
-		}
-	}
-
-	// Return complete message (including thinking and text)
-	msg := llm.Message{
-		Role:      "assistant",
-		Content:   []llm.ContentBlock{},
-		ToolCalls: toolCalls,
-		Usage:     lastUsage,
-	}
-
-	if thinkingContent.Len() > 0 {
-		msg.Content = append(msg.Content, llm.NewThinkingBlock(thinkingContent.String()))
-	}
-
-	if textContent.Len() > 0 {
-		msg.Content = append(msg.Content, llm.NewTextBlock(textContent.String()))
-	}
-
-	if errorContent.Len() > 0 {
-		msg.Content = append(msg.Content, llm.NewErrorBlock(errorContent.String()))
-	}
-
-	return msg, lastError
 }
 
 // handleToolCall encapsulates the logic for resolving, parsing, and executing
@@ -467,31 +417,38 @@ func (h *ChatHandler) streamBlocks(session gateway.SessionContext, blocks []llm.
 // It extracts text, reasoning tokens (thinking), and error messages, appending them
 // to the provided accumulation buffers. It also emits UI blocks if the chunk
 // contains valid user-facing content.
-func (h *ChatHandler) processChunk(chunk llm.StreamChunk, currentText, currentThinking, currentError *strings.Builder, blockCh chan<- llm.ContentBlock) {
-	// Handle error chunk (display to user only, don't accumulate to history text, but accumulate to error block)
+func (h *ChatHandler) processChunk(chunk llm.StreamChunk, msg *llm.Message, blockCh chan<- llm.ContentBlock) {
+	// 1. Handle error chunk
 	if chunk.Error != "" {
 		errorMsg := fmt.Sprintf("\n❌ %s", chunk.Error)
-		currentError.WriteString(errorMsg)
+		msg.AddContentBlock(llm.NewErrorBlock(errorMsg))
 		blockCh <- llm.NewErrorBlock(errorMsg)
 	}
 
+	// 2. Accumulate and push content blocks
 	for _, block := range chunk.ContentBlocks {
+		msg.AddContentBlock(block)
+
 		switch block.Type {
 		case llm.BlockTypeText:
-			currentText.WriteString(block.Text)
-			// Directly send ContentBlock
 			blockCh <- block
-
 		case llm.BlockTypeThinking:
-			currentThinking.WriteString(block.Text)
 			if h.systemConfig.ShowThinking {
-				// Directly send ContentBlock
 				blockCh <- block
 			}
 		case llm.BlockTypeImage:
-			// Images in stream (less common in Ollama, but supported for completeness)
 			blockCh <- block
 		}
+	}
+
+	// 3. Accumulate ToolCalls
+	if len(chunk.ToolCalls) > 0 {
+		msg.ToolCalls = append(msg.ToolCalls, chunk.ToolCalls...)
+	}
+
+	// 4. Update Usage
+	if chunk.Usage != nil {
+		msg.Usage = chunk.Usage
 	}
 }
 
