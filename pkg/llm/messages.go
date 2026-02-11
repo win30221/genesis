@@ -42,7 +42,11 @@ type ToolCall struct {
 	// Function encapsulates the arguments and precise function details.
 	Function FunctionCall `json:"function"`
 
-	// Meta holds internal, provider-specific fields (e.g., Gemini thinking signatures)
+	// ProviderMetadata optional metadata needed by the LLM provider to maintain
+	// state across turns (e.g., Gemini thought signatures).
+	ProviderMetadata map[string]any `json:"provider_metadata,omitempty"`
+
+	// Meta holds internal, provider-specific fields (e.g., original SDK objects)
 	// that are required for consecutive calls but not to be exposed to the user.
 	Meta map[string]any `json:"-"`
 }

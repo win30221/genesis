@@ -216,6 +216,16 @@ func (g *GeminiClient) StreamChat(ctx context.Context, messages []llm.Message, a
 						if part.FunctionCall != nil {
 							// Tool call
 							argsB, _ := json.Marshal(part.FunctionCall.Args)
+
+							// Capture thought_signature into ProviderMetadata for persistence
+							// In Google GenAI SDK, ThoughtSignature is a field of Part, not FunctionCall
+							var providerMetadata map[string]any
+							if len(part.ThoughtSignature) > 0 {
+								providerMetadata = map[string]any{
+									"thought_signature": part.ThoughtSignature,
+								}
+							}
+
 							toolCalls = append(toolCalls, llm.ToolCall{
 								ID:   "", // Gemini stream IDs are sometimes missing here
 								Name: part.FunctionCall.Name,
@@ -223,9 +233,11 @@ func (g *GeminiClient) StreamChat(ctx context.Context, messages []llm.Message, a
 									Name:      part.FunctionCall.Name,
 									Arguments: string(argsB),
 								},
-								// Save original FunctionCall for reconstruction (includes thought_signature, etc.)
+								ProviderMetadata: providerMetadata,
+								// Save original FunctionCall for reconstruction (includes ID, etc.)
 								Meta: map[string]any{
-									"gemini_function_call": part.FunctionCall,
+									"gemini_function_call":     part.FunctionCall,
+									"gemini_thought_signature": part.ThoughtSignature,
 								},
 							})
 							slog.Debug("Tool call", "provider", "gemini", "name", part.FunctionCall.Name, "args", string(argsB))
@@ -303,31 +315,9 @@ func (g *GeminiClient) convertMessages(messages []llm.Message) ([]*genai.Content
 		}
 
 		var parts []*genai.Part
-		// Check for previous ToolCalls (Gemini requires echoing them before response)
-		if len(msg.ToolCalls) > 0 {
-			for _, tc := range msg.ToolCalls {
-				// Use original FunctionCall if available (includes thought_signature)
-				if tc.Meta != nil {
-					if originalFC, ok := tc.Meta["gemini_function_call"].(*genai.FunctionCall); ok {
-						parts = append(parts, &genai.Part{
-							FunctionCall: originalFC,
-						})
-						continue
-					}
-				}
 
-				// Rebuild manually if original data is missing (may miss thought_signature)
-				var args map[string]any
-				json.Unmarshal([]byte(tc.Function.Arguments), &args)
-				parts = append(parts, &genai.Part{
-					FunctionCall: &genai.FunctionCall{
-						Name: tc.Function.Name,
-						Args: args,
-					},
-				})
-			}
-		}
-
+		// --- Part 1: Content Blocks (Thinking/Text/Images) ---
+		// IMPORTANT: Gemini 2.0 Thinking models expect Thinking/Text parts BEFORE ToolCalls
 		for _, block := range msg.Content {
 			switch block.Type {
 			case "text":
@@ -355,6 +345,53 @@ func (g *GeminiClient) convertMessages(messages []llm.Message) ([]*genai.Content
 						},
 					})
 				}
+			}
+		}
+
+		// --- Part 2: Tool Calls ---
+		if len(msg.ToolCalls) > 0 {
+			for _, tc := range msg.ToolCalls {
+				// 1. Try to use original FunctionCall from Meta (contains raw signature)
+				if tc.Meta != nil {
+					originalFC, ok1 := tc.Meta["gemini_function_call"].(*genai.FunctionCall)
+					sig, ok2 := tc.Meta["gemini_thought_signature"].([]byte)
+					if ok1 && ok2 {
+						parts = append(parts, &genai.Part{
+							FunctionCall:     originalFC,
+							ThoughtSignature: sig,
+						})
+						continue
+					}
+				}
+
+				// 2. Rebuild manually and restore thought_signature from ProviderMetadata if available
+				var args map[string]any
+				json.Unmarshal([]byte(tc.Function.Arguments), &args)
+
+				fc := &genai.FunctionCall{
+					Name: tc.Function.Name,
+					Args: args,
+				}
+
+				var thoughtSig []byte
+				// Restore thought_signature if it exists in metadata (e.g. after history recovery)
+				if tc.ProviderMetadata != nil {
+					if sig, ok := tc.ProviderMetadata["thought_signature"]; ok {
+						// The SDK expects []byte for ThoughtSignature
+						if b, ok := sig.([]byte); ok {
+							thoughtSig = b
+						} else if s, ok := sig.(string); ok {
+							// If it was serialized to base64 string, we might need to decode it
+							// But json-iterator usually handles []byte as base64 strings automatically
+							thoughtSig = []byte(s)
+						}
+					}
+				}
+
+				parts = append(parts, &genai.Part{
+					FunctionCall:     fc,
+					ThoughtSignature: thoughtSig,
+				})
 			}
 		}
 
