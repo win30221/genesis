@@ -386,22 +386,30 @@ func (g *GeminiClient) IsTransientError(err error) bool {
 	if err == nil {
 		return false
 	}
-	errMsg := err.Error()
+	errMsg := strings.ToLower(err.Error())
 
 	// 1. Google API common 503 Service Unavailable / Overloaded
-	if strings.Contains(errMsg, "503") || strings.Contains(strings.ToLower(errMsg), "overloaded") {
+	if strings.Contains(errMsg, "503") || strings.Contains(errMsg, "overloaded") {
 		return true
 	}
 
 	// 2. 429 Too Many Requests (Rate Limit)
-	if strings.Contains(errMsg, "429") || strings.Contains(strings.ToLower(errMsg), "resource exhausted") {
+	if strings.Contains(errMsg, "429") || strings.Contains(errMsg, "resource exhausted") {
 		return true
 	}
 
 	// 3. 500 Internal Error (Occasional Google Gemini crashes)
-	if strings.Contains(errMsg, "500") || strings.Contains(strings.ToLower(errMsg), "internal error") {
+	if strings.Contains(errMsg, "500") || strings.Contains(errMsg, "internal error") {
 		return true
 	}
 
+	// 4. Network-level transient errors
+	if strings.Contains(errMsg, "timeout") ||
+		strings.Contains(errMsg, "connection refused") ||
+		strings.Contains(errMsg, "context deadline exceeded") {
+		return true
+	}
+
+	// Everything else (400, 401, 403, etc.) is non-transient
 	return false
 }

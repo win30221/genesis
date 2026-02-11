@@ -60,10 +60,25 @@ func (c *Client) IsTransientError(err error) bool {
 	if err == nil {
 		return false
 	}
-	msg := err.Error()
-	return strings.Contains(msg, "context deadline exceeded") ||
+	msg := strings.ToLower(err.Error())
+
+	// Transient: network-level issues
+	if strings.Contains(msg, "context deadline exceeded") ||
 		strings.Contains(msg, "connection refused") ||
-		strings.Contains(msg, "timeout")
+		strings.Contains(msg, "timeout") {
+		return true
+	}
+
+	// Transient: server-side temporary failures
+	if strings.Contains(msg, "500 internal") ||
+		strings.Contains(msg, "502 bad gateway") ||
+		strings.Contains(msg, "503 service unavailable") ||
+		strings.Contains(msg, "overloaded") {
+		return true
+	}
+
+	// Everything else (400 Bad Request, 401 Unauthorized, etc.) is non-transient
+	return false
 }
 
 func (c *Client) StreamChat(ctx context.Context, messages []llm.Message, availableTools any) (<-chan llm.StreamChunk, error) {

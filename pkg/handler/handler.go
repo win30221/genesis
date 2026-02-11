@@ -553,7 +553,17 @@ func (h *ChatHandler) handleSlashCommand(msg *gateway.UnifiedMessage) {
 // attemptRetry checks if a retry is allowed and, if so, increments the counter
 // and sends a notification to the user. Returns true if the caller should proceed
 // with the retry (recursive call), false if max retries have been exhausted.
+//
+// Error classification is delegated entirely to each LLM Client's IsTransientError().
+// The handler does NOT parse error strings itself.
 func (h *ChatHandler) attemptRetry(msg *gateway.UnifiedMessage, reason string, streamErr error, preview string) bool {
+	// Delegate error classification to the LLM client
+	if streamErr != nil && !h.client.IsTransientError(streamErr) {
+		slog.Error("Non-transient error, skipping retry", "error", streamErr)
+		h.gw.SendReply(msg.Session, fmt.Sprintf("❌ %v", streamErr))
+		return false
+	}
+
 	maxRetries := h.systemConfig.MaxRetries
 	if msg.RetryCount >= maxRetries {
 		slog.Error("Max retries reached", "max", maxRetries, "reason", reason, "error", streamErr)
