@@ -109,8 +109,8 @@ func (tr *ToolRegistry) ToGeminiFormat() any {
 	return fds
 }
 
-// ToOllamaFormat converts to Ollama (OpenAI-compatible) API tool format
-func (tr *ToolRegistry) ToOllamaFormat() []map[string]any {
+// ToOpenaiFormat converts to OpenAI API tool format
+func (tr *ToolRegistry) ToOpenaiFormat() []map[string]any {
 	var tools []map[string]any
 	for _, tool := range tr.tools {
 		tools = append(tools, map[string]any{

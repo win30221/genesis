@@ -174,8 +174,8 @@ func (h *ChatHandler) processLLMStream(ctx context.Context, msg *gateway.Unified
 		switch pName {
 		case "gemini":
 			availableTools = h.toolRegistry.ToGeminiFormat()
-		case "ollama", "openai":
-			availableTools = h.toolRegistry.ToOllamaFormat()
+		case "openai", "ollama":
+			availableTools = h.toolRegistry.ToOpenaiFormat()
 		default:
 			slog.WarnContext(ctx, "Unknown provider format", "provider", pName)
 		}
