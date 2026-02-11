@@ -7,11 +7,8 @@ import (
 	"fmt"
 	"genesis/pkg/llm"
 	"log/slog"
-	"os"
-	"path/filepath"
 	"reflect"
 	"strings"
-	"time"
 
 	openai "github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/option"
@@ -145,29 +142,9 @@ func (c *Client) StreamChat(ctx context.Context, messages []llm.Message, availab
 		var lastFinishReason string
 		var lastUsage *llm.LLMUsage
 
-		// Initializing debug file if enabled
-		var debugFile *os.File
-		if c.debugEnabled {
-			// Base debug dir
-			debugDir := filepath.Join("debug", "chunks", c.provider)
-
-			// If a specific session ID is provided in context, use it as parent
-			if val := ctx.Value(llm.DebugDirContextKey); val != nil {
-				if dirStr, ok := val.(string); ok {
-					debugDir = filepath.Join("debug", "chunks", dirStr, c.provider)
-				}
-			}
-			os.MkdirAll(debugDir, 0755)
-			timestamp := time.Now().Format("20060102_150405")
-			filename := filepath.Join(debugDir, fmt.Sprintf("%s.log", timestamp))
-			f, err := os.OpenFile(filename, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-			if err == nil {
-				debugFile = f
-				defer debugFile.Close()
-			} else {
-				slog.Error("Failed to create debug log", "error", err)
-			}
-		}
+		// StreamDebugger handles file creation and lifecycle
+		debugger := llm.NewStreamDebugger(ctx, c.provider, c.debugEnabled)
+		defer debugger.Close()
 
 		var assistantTextAccumulator strings.Builder
 		var thinkingLogBuffer string
@@ -190,8 +167,8 @@ func (c *Client) StreamChat(ctx context.Context, messages []llm.Message, availab
 			}
 
 			// Log raw chunk if debug is enabled
-			if debugFile != nil && raw != "" {
-				debugFile.WriteString(raw + "\n")
+			if raw != "" {
+				debugger.WriteString(raw)
 			}
 
 			// Fallback thinking capture from raw JSON (DeepSeek/GPT-5 legacy style)

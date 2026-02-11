@@ -348,9 +348,9 @@ func (h *ChatHandler) processLLMStream(msg *gateway.UnifiedMessage) llm.Message 
 // Returns:
 //   - The fully aggregated message and any error encountered during consumption.
 func (h *ChatHandler) collectChunks(session gateway.SessionContext, chunkCh <-chan llm.StreamChunk, blockCh chan<- llm.ContentBlock, alreadySentThinking bool) (llm.Message, error) {
-	var textContent string
-	var thinkingContent string
-	var errorContent string
+	var textContent strings.Builder
+	var thinkingContent strings.Builder
+	var errorContent strings.Builder
 	var toolCalls []llm.ToolCall
 	var lastUsage *llm.LLMUsage
 	var lastError error
@@ -381,7 +381,8 @@ Phase1Loop:
 				thinkingTimer.Stop()
 			}
 			// Handle first chunk
-			textContent, thinkingContent, errorContent = h.processChunk(chunk, textContent, thinkingContent, errorContent, blockCh)
+			// Handle first chunk
+			h.processChunk(chunk, &textContent, &thinkingContent, &errorContent, blockCh)
 			if len(chunk.ToolCalls) > 0 {
 				toolCalls = append(toolCalls, chunk.ToolCalls...)
 			}
@@ -403,7 +404,7 @@ Phase1Loop:
 		if chunk.RawError != nil {
 			lastError = chunk.RawError
 		}
-		textContent, thinkingContent, errorContent = h.processChunk(chunk, textContent, thinkingContent, errorContent, blockCh)
+		h.processChunk(chunk, &textContent, &thinkingContent, &errorContent, blockCh)
 
 		// Accumulate ToolCalls
 		if len(chunk.ToolCalls) > 0 {
@@ -428,16 +429,16 @@ Phase1Loop:
 		Usage:     lastUsage,
 	}
 
-	if thinkingContent != "" {
-		msg.Content = append(msg.Content, llm.NewThinkingBlock(thinkingContent))
+	if thinkingContent.Len() > 0 {
+		msg.Content = append(msg.Content, llm.NewThinkingBlock(thinkingContent.String()))
 	}
 
-	if textContent != "" {
-		msg.Content = append(msg.Content, llm.NewTextBlock(textContent))
+	if textContent.Len() > 0 {
+		msg.Content = append(msg.Content, llm.NewTextBlock(textContent.String()))
 	}
 
-	if errorContent != "" {
-		msg.Content = append(msg.Content, llm.NewErrorBlock(errorContent))
+	if errorContent.Len() > 0 {
+		msg.Content = append(msg.Content, llm.NewErrorBlock(errorContent.String()))
 	}
 
 	return msg, lastError
@@ -447,23 +448,23 @@ Phase1Loop:
 // It extracts text, reasoning tokens (thinking), and error messages, appending them
 // to the provided accumulation buffers. It also emits UI blocks if the chunk
 // contains valid user-facing content.
-func (h *ChatHandler) processChunk(chunk llm.StreamChunk, currentText, currentThinking, currentError string, blockCh chan<- llm.ContentBlock) (string, string, string) {
+func (h *ChatHandler) processChunk(chunk llm.StreamChunk, currentText, currentThinking, currentError *strings.Builder, blockCh chan<- llm.ContentBlock) {
 	// Handle error chunk (display to user only, don't accumulate to history text, but accumulate to error block)
 	if chunk.Error != "" {
 		errorMsg := fmt.Sprintf("\n❌ %s", chunk.Error)
-		currentError += errorMsg
+		currentError.WriteString(errorMsg)
 		blockCh <- llm.NewErrorBlock(errorMsg)
 	}
 
 	for _, block := range chunk.ContentBlocks {
 		switch block.Type {
 		case llm.BlockTypeText:
-			currentText += block.Text
+			currentText.WriteString(block.Text)
 			// Directly send ContentBlock
 			blockCh <- block
 
 		case llm.BlockTypeThinking:
-			currentThinking += block.Text
+			currentThinking.WriteString(block.Text)
 			if h.systemConfig.ShowThinking {
 				// Directly send ContentBlock
 				blockCh <- block
@@ -473,8 +474,6 @@ func (h *ChatHandler) processChunk(chunk llm.StreamChunk, currentText, currentTh
 			blockCh <- block
 		}
 	}
-
-	return currentText, currentThinking, currentError
 }
 
 // handleSlashCommand parses and executes manual "slash" commands entered by the user.

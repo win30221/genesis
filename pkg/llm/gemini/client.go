@@ -6,10 +6,7 @@ import (
 	"fmt"
 	"genesis/pkg/llm"
 	"log/slog"
-	"os"
-	"path/filepath"
 	"strings"
-	"time"
 
 	"google.golang.org/genai"
 )
@@ -140,35 +137,17 @@ func (g *GeminiClient) StreamChat(ctx context.Context, messages []llm.Message, a
 		started := false
 		var lastUsage *llm.LLMUsage
 
-		// If debug mode is enabled, open file once for the entire stream
-		var debugFile *os.File
-		if g.debugEnabled {
-			// Base debug dir
-			debugDir := filepath.Join("debug", "chunks", "gemini")
-
-			// If session ID is in context, nested under it
-			debugID, _ := ctx.Value(llm.DebugDirContextKey).(string)
-			if debugID != "" {
-				debugDir = filepath.Join("debug", "chunks", debugID, "gemini")
-			}
-			_ = os.MkdirAll(debugDir, 0755)
-
-			timestamp := time.Now().Format("20060102_150405")
-			debugFilePath := filepath.Join(debugDir, fmt.Sprintf("%s.log", timestamp))
-			slog.Debug("Debug mode ON", "provider", "gemini", "file", debugFilePath)
-			if f, err := os.OpenFile(debugFilePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644); err == nil {
-				debugFile = f
-				defer debugFile.Close()
-			}
-		}
+		// StreamDebugger handles file creation and lifecycle
+		debugger := llm.NewStreamDebugger(ctx, "gemini", g.debugEnabled)
+		defer debugger.Close()
 
 		for resp, err := range iter {
 			// Save raw packet
-			if debugFile != nil && resp != nil {
+			if resp != nil {
 				jsonData, _ := json.Marshal(resp)
-				debugFile.Write(jsonData)
-				debugFile.WriteString("\n")
+				debugger.Write(jsonData)
 			}
+
 			if err != nil {
 				// Try to process last resp if available
 				// Google GenAI SDK iterator might return some data along with the error

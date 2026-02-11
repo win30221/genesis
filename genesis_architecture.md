@@ -630,3 +630,12 @@ flowchart TD
 | 13 | `llm/gemini` | 架構 | 思考開關分散 | 遷移至統一 `options` 參數 |
 | 14 | `handler.go` | 穩定性 | Handler 硬編碼 `isNonTransientError` | 委託 `client.IsTransientError` |
 | 15 | `config.json` | 配置 | 舊有 `use_thought_signature` 欄位 | 更新為 `options` |
+
+### 9.7 2026-02-11 效能優化與除錯重構
+
+| # | 模塊 | 分類 | 問題描述 | 修改方式 |
+|:---:|---|---|---|---|
+| 16 | `handler.go` | 效能 | `string +=` 在串流與長文本下產生過多記憶體配置 | 改用 `strings.Builder` 優化 `collectChunks` 與 `processChunk` |
+| 17 | `llm/debugger.go` | 架構 | LLM 客戶端的除錯日誌邏輯重複 (Open/Close File) | 抽取為 `StreamDebugger` 共用工具 |
+| 18 | `llm/gemini` | 清潔度 | 移除未使用的 `os`, `path` 等 import | 導入 `StreamDebugger` |
+| 19 | `llm/openailm` | 清潔度 | 移除重複的除錯日誌代碼 | 導入 `StreamDebugger` |
