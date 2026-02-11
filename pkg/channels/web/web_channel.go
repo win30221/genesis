@@ -23,7 +23,7 @@ var upgrader = websocket.Upgrader{
 }
 
 type WebConfig struct {
-	Port int `json:"port"` // Default: 8080
+	Port int `json:"port"` // Default: 9453
 }
 
 type IncomingMessage struct {

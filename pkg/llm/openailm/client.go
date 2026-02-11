@@ -17,6 +17,7 @@ import (
 	"github.com/openai/openai-go/v3/option"
 	"github.com/openai/openai-go/v3/packages/param"
 	"github.com/openai/openai-go/v3/responses"
+	"github.com/openai/openai-go/v3/shared"
 )
 
 // Client is a wrapper around the official OpenAI Go SDK
@@ -95,6 +96,42 @@ func (c *Client) StreamChat(ctx context.Context, messages []llm.Message, availab
 		},
 	}
 
+	opts := []option.RequestOption{}
+
+	// Handle unified "thinking_effort" option
+	if effortStr, ok := c.options["thinking_effort"].(string); ok && effortStr != "" && effortStr != "off" {
+		var effort shared.ReasoningEffort
+		switch effortStr {
+		case "low":
+			effort = shared.ReasoningEffortLow
+		case "medium":
+			effort = shared.ReasoningEffortMedium
+		case "high":
+			effort = shared.ReasoningEffortHigh
+		default:
+			effort = shared.ReasoningEffortMedium
+		}
+
+		params.Reasoning = shared.ReasoningParam{
+			Effort: effort,
+		}
+	}
+
+	// Handle unified "temperature" option (optional)
+	if t, ok := c.options["temperature"].(float64); ok {
+		opts = append(opts, option.WithJSONSet("temperature", t))
+	}
+
+	// Handle unified "top_p" option (optional)
+	if p, ok := c.options["top_p"].(float64); ok {
+		opts = append(opts, option.WithJSONSet("top_p", p))
+	}
+
+	// Handle unified "max_tokens" option (mapped to max_completion_tokens for o1/newer models)
+	if maxTok, ok := c.options["max_tokens"].(float64); ok {
+		opts = append(opts, option.WithJSONSet("max_completion_tokens", int(maxTok)))
+	}
+
 	if tools := c.convertTools(availableTools); len(tools) > 0 {
 		params.Tools = tools
 	}
@@ -102,7 +139,7 @@ func (c *Client) StreamChat(ctx context.Context, messages []llm.Message, availab
 	go func() {
 		defer close(chunkCh)
 
-		stream := c.client.Responses.NewStreaming(ctx, params)
+		stream := c.client.Responses.NewStreaming(ctx, params, opts...)
 		defer stream.Close()
 
 		var lastFinishReason string

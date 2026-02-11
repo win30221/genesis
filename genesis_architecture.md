@@ -1,6 +1,6 @@
 # Genesis 系統功能介紹書
 
-> **版本**：2026-02-10  
+> **版本**：2026-02-11  
 > **概述**：Genesis 是一個多平台 AI 對話引擎，支持串流回覆、工具呼叫（Agentic Loop）、多模型故障轉移、以及即時監控。
 
 ---
@@ -80,8 +80,106 @@ gw := gateway.NewGatewayBuilder().
 | `SystemPrompt` | `string` | AI 的角色人設指令 |
 
 - **`Validate()`**：檢查 `LLM` 欄位是否為空，缺少則返回錯誤。
+ 
+ ### 2.2 Channel Configuration
+ 
+ `config.json` 中的 `channels` 欄位定義了各個通訊渠道的配置。
+ 
+ #### Telegram (`telegram`)
+ 
+ | 欄位 | 類型 | 說明 |
+ |---|---|---|
+ | `token` | string | **Required**. 由 BotFather 提供的 Telegram Bot Token。 |
+ 
+ #### Web (`web`)
+ 
+ | 欄位 | 類型 | 說明 |
+ |---|---|---|
+ | `port` | int | **Optional**. Web UI 監聽埠口。預設為 `9453`。 |
 
-#### `SystemConfig` 結構體
+#### 配置範例
+ 
+ ```json
+ "channels": {
+     "web": {
+         "port": 9453
+     },
+     "telegram": {
+         "token": "123456:ABC-DEF1234ghIkl-mnOPqrstUVwxyz"
+     }
+ }
+ ```
+ 
+ ### 2.3 支援的 LLM 配置範例
+
+系統支援多組 Provider 配置（Failover 順序由陣列順序決定），以下是三個主要 Provider 的標準配置：
+
+**1. OpenAI (支援 Reasoner)**
+```json
+{
+    "type": "openai",
+    "api_keys": ["sk-..."],
+    "models": ["o4-mini", "gpt-4o"],
+    "options": {
+        "thinking_effort": "medium",  // off, low, medium, high
+        "temperature": 0.1,
+        "top_p": 0.5,
+        "max_tokens": 4096
+    }
+}
+```
+
+**2. Gemini (Google)**
+```json
+{
+    "type": "gemini",
+    "api_keys": ["AIza..."],
+    "models": ["gemini-2.0-flash"],
+    "options": {
+        "thinking_effort": "low",     // 對應 IncludeThoughts=true
+        "temperature": 0.1,
+        "top_p": 0.5,
+        "max_tokens": 4096
+    }
+}
+```
+
+**3. Ollama (Local)**
+```json
+{
+    "type": "ollama",
+    "base_url": "http://localhost:11434/v1",
+    "models": ["qwen3:30b"],
+    "options": {
+        "thinking_effort": "medium",  // 啟用思考模式
+        "temperature": 0.1,
+        "top_p": 0.5,
+        "max_tokens": 4096
+    }
+}
+```
+
+**`thinking_effort` 參數行為對照表**
+
+| 設定值 | OpenAI | Gemini | Ollama |
+|---|---|---|---|
+| `"off"` | **關閉** (effort="none") | **關閉** (IncludeThoughts=false) | **關閉** |
+| `"low"` | **開啟** (effort="low") | **開啟** (無視強度，僅開/關) | **開啟** (無視強度，僅開/關) |
+| `"medium"` | **開啟** (effort="medium") | **開啟** (無視強度，僅開/關) | **開啟** (無視強度，僅開/關) |
+| `"high"` | **開啟** (effort="high") | **開啟** (無視強度，僅開/關) | **開啟** (無視強度，僅開/關) |
+
+> **注意**：
+> 1. 對於 Gemini 和 Ollama，設定為 `low`、`medium` 或 `high` 的效果完全相同，均代表「開啟思考模式」。
+> 2. 只有 OpenAI 的推理模型（如 o1/o3）支援不同程度的思考深度控制。
+
+- **`thinking_effort`** (string): `off` / `low` / `medium` / `high`
+- **`temperature`** (float): 採樣溫度 (0.0 - 2.0)
+- **`top_p`** (float): 核採樣閾值 (0.0 - 1.0)
+- **`max_tokens`** (int): 最大生成 Token 數（OpenAI 會自動映射為 `max_completion_tokens`）
+
+> **注意**：對於 OpenAI 的推理模型 (`o1`/`o3` 等)：
+> - 若設定了 `temperature` 或 `top_p`，API 可能會回傳 `400 Bad Request`（若模型不支援）。
+> - 系統不再自動屏蔽這些參數，請使用者根據模型特性自行調整配置。
 
 | 欄位 | 預設值 | 說明 |
 |---|---|---|
@@ -99,6 +197,7 @@ gw := gateway.NewGatewayBuilder().
 | `DebugChunks` | `false` | 是否保存原始串流資料至 `/debug` |
 | `LogLevel` | `"info"` | 日誌級別 (`debug`, `info`, `warn`, `error`) |
 | `EnableTools` | `true` | 全局工具呼叫開關 |
+
 
 #### 函數
 
@@ -521,3 +620,13 @@ flowchart TD
 | 8 | `ollama/client.go` | 性能 | Debug 檔案每 chunk 都 open/close | 同修改 6 |
 | 9 | `ollama/client.go` | 正確性 | thinking + text 直接拼接無分隔 | 條件式加入 `\n` |
 | 10 | `worker_windows.go` | 一致性 | 截圖臨時檔寫入 CWD 而非 temp | `os.TempDir()` |
+
+### 9.6 2026-02-11 重構：統一思考模式與錯誤處理
+
+| # | 模塊 | 分類 | 問題描述 | 修改方式 |
+|:---:|---|---|---|---|
+| 11 | `llm/registry.go` | 架構 | 各 Provider 思考參數不一致 | 統一為 `options["thinking_effort"]` |
+| 12 | `llm/openailm` | 功能 | OpenAI SDK v3 缺乏思考模型支援 | 實作 `ReasoningParam` 映射與 `IsTransientError` 擴充 (5xx) |
+| 13 | `llm/gemini` | 架構 | 思考開關分散 | 遷移至統一 `options` 參數 |
+| 14 | `handler.go` | 穩定性 | Handler 硬編碼 `isNonTransientError` | 委託 `client.IsTransientError` |
+| 15 | `config.json` | 配置 | 舊有 `use_thought_signature` 欄位 | 更新為 `options` |

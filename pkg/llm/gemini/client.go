@@ -20,6 +20,7 @@ type GeminiClient struct {
 	model        string
 	useThought   bool
 	debugEnabled bool
+	options      map[string]any
 }
 
 // SetDebug implements the llm.LLMClient interface
@@ -28,7 +29,7 @@ func (g *GeminiClient) SetDebug(enabled bool) {
 }
 
 // NewGeminiClient creates a Gemini client with a single model and API key
-func NewGeminiClient(apiKey string, model string, useThought bool) *GeminiClient {
+func NewGeminiClient(apiKey string, model string, useThought bool, options map[string]any) *GeminiClient {
 	ctx := context.Background()
 	client, err := genai.NewClient(ctx, &genai.ClientConfig{
 		APIKey:  apiKey,
@@ -42,6 +43,7 @@ func NewGeminiClient(apiKey string, model string, useThought bool) *GeminiClient
 		client:     client,
 		model:      model,
 		useThought: useThought,
+		options:    options,
 	}
 }
 
@@ -108,11 +110,32 @@ func (g *GeminiClient) StreamChat(ctx context.Context, messages []llm.Message, a
 			}
 		}
 
-		iter := g.client.Models.GenerateContentStream(ctx, g.model, apiMessages, &genai.GenerateContentConfig{
+		// Handle config options
+		genConfig := &genai.GenerateContentConfig{
 			SystemInstruction: systemInstruction,
 			Tools:             genaiTools,
 			ThinkingConfig:    thinkingCfg,
-		})
+		}
+
+		// 1. Temperature
+		if t, ok := g.options["temperature"].(float64); ok {
+			t32 := float32(t)
+			genConfig.Temperature = &t32
+		}
+
+		// 2. TopP
+		if p, ok := g.options["top_p"].(float64); ok {
+			p32 := float32(p)
+			genConfig.TopP = &p32
+		}
+
+		// 3. MaxTokens
+		if maxTok, ok := g.options["max_tokens"].(float64); ok {
+			maxTokInt := int32(maxTok)
+			genConfig.MaxOutputTokens = maxTokInt
+		}
+
+		iter := g.client.Models.GenerateContentStream(ctx, g.model, apiMessages, genConfig)
 
 		started := false
 		var lastUsage *llm.LLMUsage

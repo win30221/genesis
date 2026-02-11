@@ -8,12 +8,11 @@ import (
 // from a specific LLM provider. This configuration allows for multi-model
 // support and model-specific behavioral flags (like thought signatures).
 type ProviderGroupConfig struct {
-	Type                string         `json:"type"`                            // Provider type identifier (e.g., "gemini", "ollama")
-	APIKeys             []string       `json:"api_keys,omitempty"`              // Optional pool of API keys for load balancing or rotation
-	Models              []string       `json:"models"`                          // List of model names to initialize (e.g., ["gemini-1.5-flash"])
-	BaseURL             string         `json:"base_url,omitempty"`              // Custom API endpoint (mostly used for local Ollama instances)
-	UseThoughtSignature bool           `json:"use_thought_signature,omitempty"` // Whether to enable reasoning token tracking (Gemini specific)
-	Options             map[string]any `json:"options,omitempty"`               // Arbitrary provider-specific parameters (temperature, topP, etc.)
+	Type    string         `json:"type"`               // Provider type identifier (e.g., "gemini", "ollama")
+	APIKeys []string       `json:"api_keys,omitempty"` // Optional pool of API keys for load balancing or rotation
+	Models  []string       `json:"models"`             // List of model names to initialize (e.g., ["gemini-1.5-flash"])
+	BaseURL string         `json:"base_url,omitempty"` // Custom API endpoint (mostly used for local Ollama instances)
+	Options map[string]any `json:"options,omitempty"`  // Unified parameters (thinking_effort, temperature, topP, etc.)
 }
 
 // ProviderFactory is a structural interface for provider-specific loaders.
