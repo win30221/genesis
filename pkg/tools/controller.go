@@ -1,5 +1,7 @@
 package tools
 
+import "context"
+
 // ActionRequest represents a standardized payload for controlling a plugin or worker.
 // It follows the "Action Dispatching" pattern to decouple the tool definition
 // from the platform-specific execution details.
@@ -20,7 +22,7 @@ type ActionResponse struct {
 // dispatch-based execution model.
 type Controller interface {
 	// Execute dispatches and performs a specified action based on the request.
-	Execute(req ActionRequest) (*ActionResponse, error)
+	Execute(ctx context.Context, req ActionRequest) (*ActionResponse, error)
 
 	// Capabilities returns a listing of all primitive actions (verbs)
 	// supported by this specific controller instance.

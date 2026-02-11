@@ -35,14 +35,19 @@ func NewStreamDebugger(ctx context.Context, provider string, enabled bool) *Stre
 		}
 	}
 
-	timestamp := time.Now().Format("20060102_150405")
-	filename := filepath.Join(debugDir, fmt.Sprintf("%s.log", timestamp))
+	// Use a fixed filename instead of timestamp to group all chunks of a round into one file
+	filename := filepath.Join(debugDir, "chat.log")
 
-	return &StreamDebugger{
+	d := &StreamDebugger{
 		debugDir: debugDir,
 		filename: filename,
 		enabled:  true,
 	}
+
+	// Write a separator or timestamp to distinguish between recursive calls in the same file
+	d.WriteString(fmt.Sprintf("\n--- ROUND START: %s ---\n", time.Now().Format("2006-01-02 15:04:05")))
+
+	return d
 }
 
 // ensureFileOpened performs the actual directory and file creation if not already done.
@@ -65,7 +70,7 @@ func (d *StreamDebugger) ensureFileOpened() error {
 	}
 
 	d.file = f
-	slog.Debug("Lazy debug log opened", "file", d.filename)
+	slog.Debug("Debug log opened", "file", d.filename)
 	return nil
 }
 

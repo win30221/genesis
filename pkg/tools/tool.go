@@ -1,5 +1,7 @@
 package tools
 
+import "context"
+
 // Tool defines the structural interface for any capability that the AI Agent
 // can execute. It includes metadata for prompt injection (JSON Schema)
 // and the execution logic itself.
@@ -13,7 +15,7 @@ type Tool interface {
 	// RequiredParameters returns a list of mandatory field names for the input object.
 	RequiredParameters() []string
 	// Execute performs the actual tool logic using the provided argument map.
-	Execute(args map[string]any) (*ToolResult, error)
+	Execute(ctx context.Context, args map[string]any) (*ToolResult, error)
 }
 
 // ToolResult encapsulates the outcome of a tool execution.

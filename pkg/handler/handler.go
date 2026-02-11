@@ -87,9 +87,14 @@ func (h *ChatHandler) OnMessage(msg *gateway.UnifiedMessage) {
 		rand.Read(b)
 		msg.DebugID = fmt.Sprintf("%x", b)
 	}
+
+	// Create base context with DebugID
+	ctx := context.WithValue(context.Background(), llm.DebugDirContextKey, msg.DebugID)
 	start := time.Now()
 
-	slog.Info("Message received", "channel", msg.Session.ChannelID, "user", msg.Session.Username, "content", msg.Content, "files", len(msg.Files), "debug_id", msg.DebugID)
+	// Add a visual separator for new messages in CLI
+	fmt.Println()
+	slog.InfoContext(ctx, "Message received", "channel", msg.Session.ChannelID, "user", msg.Session.Username, "content", msg.Content, "files", len(msg.Files))
 
 	// --- Slash Commands ---
 	// Test commands should not be added to history, handle and return directly
@@ -112,21 +117,21 @@ func (h *ChatHandler) OnMessage(msg *gateway.UnifiedMessage) {
 	// Add image attachments
 	for _, file := range msg.Files {
 		userMsg.Content = append(userMsg.Content, llm.NewImageBlock(file.Data, file.MimeType))
-		slog.Info("Attached file", "name", file.Filename, "mime", file.MimeType, "bytes", len(file.Data))
+		slog.InfoContext(ctx, "Attached file", "name", file.Filename, "mime", file.MimeType, "bytes", len(file.Data))
 	}
 
 	// Store user message
 	h.history.Add(userMsg)
 
 	// 2. Call LLM and handle stream
-	assistantMsg := h.processLLMStream(msg)
+	assistantMsg := h.processLLMStream(ctx, msg)
 
 	// 3. Record AI response
 	if len(assistantMsg.Content) > 0 {
 		h.history.Add(assistantMsg)
 	}
 
-	slog.Info("Agent loop finished", "duration", time.Since(start).String(), "debug_id", msg.DebugID)
+	slog.InfoContext(ctx, "Agent loop finished", "duration", time.Since(start).String())
 }
 
 // processLLMStream manages the core Agentic reasoning loop including streaming
@@ -149,15 +154,10 @@ func (h *ChatHandler) OnMessage(msg *gateway.UnifiedMessage) {
 //
 // Returns:
 //   - The final aggregated llm.Message representing the AI's complete response/state.
-func (h *ChatHandler) processLLMStream(msg *gateway.UnifiedMessage) llm.Message {
+func (h *ChatHandler) processLLMStream(ctx context.Context, msg *gateway.UnifiedMessage) llm.Message {
 	timeout := time.Duration(h.systemConfig.LLMTimeoutMs) * time.Millisecond
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-
-	// Inject debug tracking ID (used to group agent loop logs into one folder)
-	if msg.DebugID != "" {
-		ctx = context.WithValue(ctx, llm.DebugDirContextKey, msg.DebugID)
-	}
 
 	// Set up "thinking" timer
 	thinkingSent := false
@@ -177,7 +177,7 @@ func (h *ChatHandler) processLLMStream(msg *gateway.UnifiedMessage) llm.Message 
 		case "ollama", "openai":
 			availableTools = h.toolRegistry.ToOllamaFormat()
 		default:
-			slog.Warn("Unknown provider format", "provider", pName)
+			slog.WarnContext(ctx, "Unknown provider format", "provider", pName)
 		}
 	}
 
@@ -185,7 +185,7 @@ func (h *ChatHandler) processLLMStream(msg *gateway.UnifiedMessage) llm.Message 
 	initTimer.Stop()
 
 	if err != nil {
-		slog.Error("LLM stream init failed", "error", err)
+		slog.ErrorContext(ctx, "LLM stream init failed", "error", err)
 		h.gw.SendReply(msg.Session, fmt.Sprintf("❌ Error: %v", err))
 		return llm.Message{}
 	}
@@ -196,7 +196,7 @@ func (h *ChatHandler) processLLMStream(msg *gateway.UnifiedMessage) llm.Message 
 	go func() {
 		defer close(streamDone)
 		if err := h.gw.StreamReply(msg.Session, blockCh); err != nil {
-			slog.Error("Failed to stream reply", "error", err)
+			slog.ErrorContext(ctx, "Failed to stream reply", "error", err)
 		}
 	}()
 
@@ -212,7 +212,7 @@ func (h *ChatHandler) processLLMStream(msg *gateway.UnifiedMessage) llm.Message 
 	defer safeClose()
 
 	// Handle chunks
-	assistantMsg, streamErr := h.collectChunks(msg.Session, chunkCh, blockCh, thinkingSent)
+	assistantMsg, streamErr := h.collectChunks(ctx, msg.Session, chunkCh, blockCh, thinkingSent)
 
 	// 1. End of LLM turn, close current stream block in time (e.g., block containing thinking process)
 	safeClose()
@@ -223,11 +223,11 @@ func (h *ChatHandler) processLLMStream(msg *gateway.UnifiedMessage) llm.Message 
 		h.history.Add(assistantMsg)
 
 		for _, tc := range assistantMsg.ToolCalls {
-			h.resolveAndCommitToolCall(tc, msg)
+			h.resolveAndCommitToolCall(ctx, tc, msg)
 		}
 
 		// safeClose already called before recursion
-		return h.processLLMStream(msg)
+		return h.processLLMStream(ctx, msg)
 	}
 
 	// 3. Anomaly detection and automatic retry
@@ -250,7 +250,7 @@ func (h *ChatHandler) processLLMStream(msg *gateway.UnifiedMessage) llm.Message 
 			maxCont := h.systemConfig.MaxContinuations
 			if msg.ContinueCount < maxCont {
 				msg.ContinueCount++
-				slog.Info("Truncation detected, continuing", "thinking", hasThinking, "content", hasContent, "continuation", fmt.Sprintf("%d/%d", msg.ContinueCount, maxCont), "preview", preview)
+				slog.InfoContext(ctx, "Truncation detected, continuing", "thinking", hasThinking, "content", hasContent, "continuation", fmt.Sprintf("%d/%d", msg.ContinueCount, maxCont), "preview", preview)
 
 				h.gw.SendReply(msg.Session, fmt.Sprintf("⚠️ Content truncated due to length, attempting to continue (%d/%d)...", msg.ContinueCount, maxCont))
 
@@ -259,18 +259,18 @@ func (h *ChatHandler) processLLMStream(msg *gateway.UnifiedMessage) llm.Message 
 
 				time.Sleep(time.Duration(h.systemConfig.RetryDelayMs) * time.Millisecond)
 				safeClose()
-				return h.processLLMStream(msg)
+				return h.processLLMStream(ctx, msg)
 			} else {
-				slog.Warn("Max continuation reached", "max", maxCont)
+				slog.WarnContext(ctx, "Max continuation reached", "max", maxCont)
 				h.gw.SendReply(msg.Session, "❌ Max continuation reached, forced stop.")
 				return assistantMsg
 			}
 		}
 
 		// 3.2 Handle general retry logic
-		if retried := h.attemptRetry(msg, reason, streamErr, preview); retried {
+		if retried := h.attemptRetry(ctx, msg, reason, streamErr, preview); retried {
 			safeClose()
-			return h.processLLMStream(msg)
+			return h.processLLMStream(ctx, msg)
 		}
 	}
 
@@ -289,7 +289,7 @@ func (h *ChatHandler) processLLMStream(msg *gateway.UnifiedMessage) llm.Message 
 //
 // Returns:
 //   - The fully aggregated message and any error encountered during consumption.
-func (h *ChatHandler) collectChunks(session gateway.SessionContext, chunkCh <-chan llm.StreamChunk, blockCh chan<- llm.ContentBlock, alreadySentThinking bool) (llm.Message, error) {
+func (h *ChatHandler) collectChunks(ctx context.Context, session gateway.SessionContext, chunkCh <-chan llm.StreamChunk, blockCh chan<- llm.ContentBlock, alreadySentThinking bool) (llm.Message, error) {
 	msg := llm.Message{
 		Role:    "assistant",
 		Content: []llm.ContentBlock{},
@@ -323,7 +323,7 @@ func (h *ChatHandler) collectChunks(session gateway.SessionContext, chunkCh <-ch
 				timerChan = nil
 			}
 
-			h.processChunk(chunk, &msg, blockCh)
+			h.processChunk(ctx, chunk, &msg, blockCh)
 
 			if chunk.IsFinal {
 				return msg, lastError
@@ -338,7 +338,7 @@ func (h *ChatHandler) collectChunks(session gateway.SessionContext, chunkCh <-ch
 
 // handleToolCall encapsulates the logic for resolving, parsing, and executing
 // an individual tool call. It uses guard clauses to keep the logic flat.
-func (h *ChatHandler) handleToolCall(tc llm.ToolCall) []llm.ContentBlock {
+func (h *ChatHandler) handleToolCall(ctx context.Context, tc llm.ToolCall) []llm.ContentBlock {
 	// 1. Get tool from registry
 	// Normalize tool name: Some models might prepend "functions." to the tool name
 	// based on specific internal training or legacy patterns.
@@ -347,22 +347,22 @@ func (h *ChatHandler) handleToolCall(tc llm.ToolCall) []llm.ContentBlock {
 
 	tool, ok := h.toolRegistry.Get(cleanName)
 	if !ok {
-		slog.Error("Unknown tool call", "name", tc.Name, "clean_name", cleanName)
+		slog.ErrorContext(ctx, "Unknown tool call", "name", tc.Name, "clean_name", cleanName)
 		return []llm.ContentBlock{llm.NewTextBlock(fmt.Sprintf("Error: Unknown tool '%s'", tc.Name))}
 	}
 
 	// 2. Parse arguments
 	var args map[string]any
 	if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
-		slog.Error("Failed to parse tool args", "error", err)
+		slog.ErrorContext(ctx, "Failed to parse tool args", "error", err)
 		return []llm.ContentBlock{llm.NewTextBlock(fmt.Sprintf("Error: Failed to parse tool arguments: %v", err))}
 	}
 
 	// 3. Execute tool
-	slog.Info("Executing tool", "name", tc.Name, "args", args)
-	res, err := tool.Execute(args)
+	slog.InfoContext(ctx, "Executing tool", "name", tc.Name, "args", args)
+	res, err := tool.Execute(ctx, args)
 	if err != nil {
-		slog.Error("Tool execution error", "name", tc.Name, "error", err)
+		slog.ErrorContext(ctx, "Tool execution error", "name", tc.Name, "error", err)
 		return []llm.ContentBlock{llm.NewTextBlock(fmt.Sprintf("Error: Tool execution failed: %v", err))}
 	}
 
@@ -372,12 +372,12 @@ func (h *ChatHandler) handleToolCall(tc llm.ToolCall) []llm.ContentBlock {
 
 // resolveAndCommitToolCall is a resilience wrapper that ensures Every tool call
 // results in a tool message being added to the history, even if the tool panics.
-func (h *ChatHandler) resolveAndCommitToolCall(tc llm.ToolCall, msg *gateway.UnifiedMessage) {
+func (h *ChatHandler) resolveAndCommitToolCall(ctx context.Context, tc llm.ToolCall, msg *gateway.UnifiedMessage) {
 	var resultBlocks []llm.ContentBlock
 
 	defer func() {
 		if r := recover(); r != nil {
-			slog.Error("Tool execution panicked", "tool", tc.Name, "error", r)
+			slog.ErrorContext(ctx, "Tool execution panicked", "tool", tc.Name, "error", r)
 			resultBlocks = []llm.ContentBlock{llm.NewTextBlock("Error: Internal processing panic")}
 		}
 
@@ -392,14 +392,14 @@ func (h *ChatHandler) resolveAndCommitToolCall(tc llm.ToolCall, msg *gateway.Uni
 
 		// 2. Use independent stream to send tool results to frontend (Role: tool/system)
 		h.gw.SendSignal(msg.Session, "role:system")
-		h.streamBlocks(msg.Session, resultBlocks)
+		h.streamBlocks(ctx, msg.Session, resultBlocks)
 	}()
 
-	resultBlocks = h.handleToolCall(tc)
+	resultBlocks = h.handleToolCall(ctx, tc)
 }
 
 // streamBlocks is a utility to pipe a slice of content blocks into the gateway's stream.
-func (h *ChatHandler) streamBlocks(session gateway.SessionContext, blocks []llm.ContentBlock) {
+func (h *ChatHandler) streamBlocks(ctx context.Context, session gateway.SessionContext, blocks []llm.ContentBlock) {
 	if len(blocks) == 0 {
 		return
 	}
@@ -409,7 +409,7 @@ func (h *ChatHandler) streamBlocks(session gateway.SessionContext, blocks []llm.
 	}
 	close(resCh)
 	if err := h.gw.StreamReply(session, resCh); err != nil {
-		slog.Error("Failed to stream blocks", "error", err)
+		slog.ErrorContext(ctx, "Failed to stream blocks", "error", err)
 	}
 }
 
@@ -417,7 +417,7 @@ func (h *ChatHandler) streamBlocks(session gateway.SessionContext, blocks []llm.
 // It extracts text, reasoning tokens (thinking), and error messages, appending them
 // to the provided accumulation buffers. It also emits UI blocks if the chunk
 // contains valid user-facing content.
-func (h *ChatHandler) processChunk(chunk llm.StreamChunk, msg *llm.Message, blockCh chan<- llm.ContentBlock) {
+func (h *ChatHandler) processChunk(ctx context.Context, chunk llm.StreamChunk, msg *llm.Message, blockCh chan<- llm.ContentBlock) {
 	// 1. Handle error chunk
 	if chunk.Error != "" {
 		errorMsg := fmt.Sprintf("\n❌ %s", chunk.Error)
@@ -472,7 +472,9 @@ func (h *ChatHandler) handleSlashCommand(msg *gateway.UnifiedMessage) {
 		if len(parts) > 2 {
 			msg.Content += " " + parts[2]
 		}
-		assistantMsg := h.processLLMStream(msg)
+		// Manual command entry also needs context (derived from OnMessage ID)
+		ctx := context.WithValue(context.Background(), llm.DebugDirContextKey, msg.DebugID)
+		assistantMsg := h.processLLMStream(ctx, msg)
 		h.history.Add(assistantMsg)
 		return
 	}
@@ -509,14 +511,16 @@ func (h *ChatHandler) handleSlashCommand(msg *gateway.UnifiedMessage) {
 	}
 
 	h.gw.SendReply(msg.Session, fmt.Sprintf("🛠️ Manually executing tool: %s/%s...", toolName, action))
-	res, err := tool.Execute(args)
+	// Manual execution derived context
+	ctx := context.WithValue(context.Background(), llm.DebugDirContextKey, msg.DebugID)
+	res, err := tool.Execute(ctx, args)
 	if err != nil {
 		h.gw.SendReply(msg.Session, fmt.Sprintf("❌ Execution error: %v", err))
 		return
 	}
 
 	// Send results using unified streaming helper
-	h.streamBlocks(msg.Session, convertToolResult(res))
+	h.streamBlocks(ctx, msg.Session, convertToolResult(res))
 }
 
 // attemptRetry checks if a retry is allowed and, if so, increments the counter
@@ -525,23 +529,23 @@ func (h *ChatHandler) handleSlashCommand(msg *gateway.UnifiedMessage) {
 //
 // Error classification is delegated entirely to each LLM Client's IsTransientError().
 // The handler does NOT parse error strings itself.
-func (h *ChatHandler) attemptRetry(msg *gateway.UnifiedMessage, reason string, streamErr error, preview string) bool {
+func (h *ChatHandler) attemptRetry(ctx context.Context, msg *gateway.UnifiedMessage, reason string, streamErr error, preview string) bool {
 	// Delegate error classification to the LLM client
 	if streamErr != nil && !h.client.IsTransientError(streamErr) {
-		slog.Error("Non-transient error, skipping retry", "error", streamErr)
+		slog.ErrorContext(ctx, "Non-transient error, skipping retry", "error", streamErr)
 		h.gw.SendReply(msg.Session, fmt.Sprintf("❌ %v", streamErr))
 		return false
 	}
 
 	maxRetries := h.systemConfig.MaxRetries
 	if msg.RetryCount >= maxRetries {
-		slog.Error("Max retries reached", "max", maxRetries, "reason", reason, "error", streamErr)
+		slog.ErrorContext(ctx, "Max retries reached", "max", maxRetries, "reason", reason, "error", streamErr)
 		h.gw.SendReply(msg.Session, "❌ AI response remains abnormal, please try rephrasing or restarting the conversation.")
 		return false
 	}
 
 	msg.RetryCount++
-	slog.Warn("Abnormal response, retrying",
+	slog.WarnContext(ctx, "Abnormal response, retrying",
 		"reason", reason,
 		"error", streamErr,
 		"preview", preview,

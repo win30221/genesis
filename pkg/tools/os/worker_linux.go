@@ -3,6 +3,7 @@
 package os
 
 import (
+	"context"
 	"fmt"
 	"genesis/pkg/tools"
 	"log/slog"
@@ -30,21 +31,21 @@ func (w *LinuxWorker) Capabilities() []string {
 	}
 }
 
-func (w *LinuxWorker) Execute(req tools.ActionRequest) (*tools.ActionResponse, error) {
+func (w *LinuxWorker) Execute(ctx context.Context, req tools.ActionRequest) (*tools.ActionResponse, error) {
 	switch req.Action {
 	case "run_command":
 		cmdStr, ok := req.Params["command"].(string)
 		if !ok {
 			return nil, fmt.Errorf("missing string parameter 'command'")
 		}
-		output, err := w.runCommand(cmdStr)
+		output, err := w.runCommand(ctx, cmdStr)
 		if err != nil {
 			return &tools.ActionResponse{Success: false, Error: err.Error()}, nil
 		}
 		return &tools.ActionResponse{Success: true, Data: output}, nil
 
 	case "screenshot":
-		data, err := w.takeScreenshot()
+		data, err := w.takeScreenshot(ctx)
 		if err != nil {
 			return &tools.ActionResponse{Success: false, Error: err.Error()}, nil
 		}
@@ -55,13 +56,13 @@ func (w *LinuxWorker) Execute(req tools.ActionRequest) (*tools.ActionResponse, e
 	}
 }
 
-func (w *LinuxWorker) runCommand(cmdStr string) (string, error) {
-	slog.Info("Executing command", "dir", w.workingDir, "command", cmdStr)
+func (w *LinuxWorker) runCommand(ctx context.Context, cmdStr string) (string, error) {
+	slog.InfoContext(ctx, "Executing command", "dir", w.workingDir, "command", cmdStr)
 
 	// Use bash for Linux
 	fullCmd := fmt.Sprintf("cd %q && %s && pwd", w.workingDir, cmdStr)
 
-	cmd := exec.Command("/bin/bash", "-c", fullCmd)
+	cmd := exec.CommandContext(ctx, "/bin/bash", "-c", fullCmd)
 	outputBytes, err := cmd.CombinedOutput()
 	output := string(outputBytes)
 
@@ -81,15 +82,15 @@ func (w *LinuxWorker) runCommand(cmdStr string) (string, error) {
 	return output, nil
 }
 
-func (w *LinuxWorker) takeScreenshot() (string, error) {
+func (w *LinuxWorker) takeScreenshot(ctx context.Context) (string, error) {
 	tempFile := "/tmp/screenshot.png"
 	// Try gnome-screenshot first
 	// -f: filename
-	cmd := exec.Command("gnome-screenshot", "-f", tempFile)
+	cmd := exec.CommandContext(ctx, "gnome-screenshot", "-f", tempFile)
 	if err := cmd.Run(); err != nil {
 		// Fallback to scrot
-		slog.Warn("gnome-screenshot failed, trying scrot", "error", err)
-		cmd = exec.Command("scrot", tempFile)
+		slog.WarnContext(ctx, "gnome-screenshot failed, trying scrot", "error", err)
+		cmd = exec.CommandContext(ctx, "scrot", tempFile)
 		if err = cmd.Run(); err != nil {
 			return "", fmt.Errorf("screenshot failed (tried gnome-screenshot and scrot): %w", err)
 		}

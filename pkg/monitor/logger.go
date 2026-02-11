@@ -32,12 +32,28 @@ func (h *CustomHandler) Enabled(ctx context.Context, level slog.Level) bool {
 func (h *CustomHandler) Handle(ctx context.Context, r slog.Record) error {
 	buf := bytes.NewBuffer(nil)
 
-	// Format: [2006-01-02 15:04:05] [LEVEL] Message
-	fmt.Fprintf(buf, "[%s] [%s] %s",
+	// Extract DebugID from context if available
+	debugID := ""
+	if ctx != nil {
+		if val := ctx.Value("llm_debug_dir"); val != nil {
+			if id, ok := val.(string); ok && id != "" {
+				debugID = id
+			}
+		}
+	}
+
+	// Format: [2006-01-02 15:04:05] [LEVEL] [DEBUG_ID] Message
+	// Or:    [2006-01-02 15:04:05] [LEVEL] Message (if no debugID)
+	fmt.Fprintf(buf, "[%s] [%s]",
 		r.Time.Format("2006-01-02 15:04:05"),
 		r.Level,
-		r.Message,
 	)
+
+	if debugID != "" {
+		fmt.Fprintf(buf, " [%s]", debugID)
+	}
+
+	fmt.Fprintf(buf, " %s", r.Message)
 
 	// Append attributes
 	// 1. Stored attributes (from WithAttrs)

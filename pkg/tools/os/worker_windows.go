@@ -4,6 +4,7 @@ package os
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"genesis/pkg/tools"
 	"log/slog"
@@ -38,21 +39,21 @@ func (w *WindowsWorker) Capabilities() []string {
 
 // Execute dispatches the generic ActionRequest to specialized Windows-native
 // implementations like PowerShell runners or GDI+ screen capture routines.
-func (w *WindowsWorker) Execute(req tools.ActionRequest) (*tools.ActionResponse, error) {
+func (w *WindowsWorker) Execute(ctx context.Context, req tools.ActionRequest) (*tools.ActionResponse, error) {
 	switch req.Action {
 	case "run_command":
 		cmdStr, ok := req.Params["command"].(string)
 		if !ok {
 			return nil, fmt.Errorf("missing string parameter 'command'")
 		}
-		output, err := w.runCommand(cmdStr)
+		output, err := w.runCommand(ctx, cmdStr)
 		if err != nil {
 			return &tools.ActionResponse{Success: false, Error: err.Error()}, nil
 		}
 		return &tools.ActionResponse{Success: true, Data: output}, nil
 
 	case "screenshot":
-		data, err := w.takeScreenshot()
+		data, err := w.takeScreenshot(ctx)
 		if err != nil {
 			return &tools.ActionResponse{Success: false, Error: err.Error()}, nil
 		}
@@ -71,7 +72,7 @@ func (w *WindowsWorker) Execute(req tools.ActionRequest) (*tools.ActionResponse,
 // - Stateful: Appends a PWD command to track directory changes (e.g., after 'cd').
 // - Resilient: Merges Stdout and Stderr for comprehensive logging.
 // - Transparent: Strips the internal PWD metadata from the output before returning.
-func (w *WindowsWorker) runCommand(cmdStr string) (string, error) {
+func (w *WindowsWorker) runCommand(ctx context.Context, cmdStr string) (string, error) {
 	// Convert %VAR% to PowerShell format $env:VAR
 	re := regexp.MustCompile(`%([^%]+)%`)
 	expandedCmd := re.ReplaceAllString(cmdStr, `$env:$1`)
@@ -84,9 +85,9 @@ func (w *WindowsWorker) runCommand(cmdStr string) (string, error) {
 	// Use ; to separate multiple commands
 	fullCmd := fmt.Sprintf("%s; $ExecutionContext.SessionState.Path.CurrentLocation.Path", utf8Cmd)
 
-	slog.Info("Executing command", "dir", w.workingDir, "command", fullCmd)
+	slog.InfoContext(ctx, "Executing command", "dir", w.workingDir, "command", fullCmd)
 
-	cmd := exec.Command("powershell", "-Command", fullCmd)
+	cmd := exec.CommandContext(ctx, "powershell", "-Command", fullCmd)
 	cmd.Dir = w.workingDir
 	var out bytes.Buffer
 	cmd.Stdout = &out
@@ -119,7 +120,7 @@ func (w *WindowsWorker) runCommand(cmdStr string) (string, error) {
 // It saves the image to a temporary file, reads it into memory as a
 // base64-encoded string, and performs cleanup.
 // This allows cross-process screen capture without external dependencies.
-func (w *WindowsWorker) takeScreenshot() (string, error) {
+func (w *WindowsWorker) takeScreenshot(ctx context.Context) (string, error) {
 	// Use PowerShell script to capture screen and save to temp file, then read as base64
 	tempFile := filepath.Join(os.TempDir(), "genesis_screenshot.png")
 	psScript := fmt.Sprintf(`
@@ -138,7 +139,7 @@ $Graphics.Dispose()
 $Bitmap.Dispose()
 `, tempFile)
 
-	_, err := w.runCommand(psScript)
+	_, err := w.runCommand(ctx, psScript)
 	if err != nil {
 		return "", fmt.Errorf("failed to take screenshot via powershell: %w", err)
 	}

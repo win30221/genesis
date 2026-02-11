@@ -110,7 +110,7 @@ func (f *FallbackClient) StreamChat(ctx context.Context, messages []Message, ava
 
 		for retry := 1; retry <= maxRetries; retry++ {
 			if retry > 1 {
-				slog.Warn("Retrying provider", "provider", i+1, "attempt", retry, "max", maxRetries)
+				slog.WarnContext(ctx, "Retrying provider", "provider", i+1, "attempt", retry, "max", maxRetries)
 				// Wait briefly before retrying
 				select {
 				case <-ctx.Done():
@@ -127,12 +127,12 @@ func (f *FallbackClient) StreamChat(ctx context.Context, messages []Message, ava
 			lastErr = err
 
 			// Check if the error is transient using the client's implementation
-			if client.IsTransientError(err) && retry < maxRetries {
+			if client.IsTransientError(err) && retry <= maxRetries {
 				continue
 			}
 
 			// Not a transient error, or max retries reached
-			slog.Error("Provider failed", "provider", i+1, "error", err)
+			slog.ErrorContext(ctx, "Provider failed", "provider", i+1, "error", err)
 			break
 		}
 	}

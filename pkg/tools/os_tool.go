@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"context"
 	"fmt"
 	"runtime"
 	"sort"
@@ -141,7 +142,7 @@ func (t *OSTool) getActionNames() []string {
 
 // ---------- Execute ----------
 
-func (t *OSTool) Execute(args map[string]any) (*ToolResult, error) {
+func (t *OSTool) Execute(ctx context.Context, args map[string]any) (*ToolResult, error) {
 	// 1. Parsing and validation
 	spec, params, err := t.parseAndValidateArgs(args)
 	if err != nil {
@@ -149,7 +150,7 @@ func (t *OSTool) Execute(args map[string]any) (*ToolResult, error) {
 	}
 
 	// 2. Call Controller
-	resp, err := t.controller.Execute(ActionRequest{
+	resp, err := t.controller.Execute(ctx, ActionRequest{
 		Action: spec.Name,
 		Params: params,
 	})

@@ -3,6 +3,7 @@
 package os
 
 import (
+	"context"
 	"fmt"
 	"genesis/pkg/tools"
 	"log/slog"
@@ -30,21 +31,21 @@ func (w *DarwinWorker) Capabilities() []string {
 	}
 }
 
-func (w *DarwinWorker) Execute(req tools.ActionRequest) (*tools.ActionResponse, error) {
+func (w *DarwinWorker) Execute(ctx context.Context, req tools.ActionRequest) (*tools.ActionResponse, error) {
 	switch req.Action {
 	case "run_command":
 		cmdStr, ok := req.Params["command"].(string)
 		if !ok {
 			return nil, fmt.Errorf("missing string parameter 'command'")
 		}
-		output, err := w.runCommand(cmdStr)
+		output, err := w.runCommand(ctx, cmdStr)
 		if err != nil {
 			return &tools.ActionResponse{Success: false, Error: err.Error()}, nil
 		}
 		return &tools.ActionResponse{Success: true, Data: output}, nil
 
 	case "screenshot":
-		data, err := w.takeScreenshot()
+		data, err := w.takeScreenshot(ctx)
 		if err != nil {
 			return &tools.ActionResponse{Success: false, Error: err.Error()}, nil
 		}
@@ -55,8 +56,8 @@ func (w *DarwinWorker) Execute(req tools.ActionRequest) (*tools.ActionResponse, 
 	}
 }
 
-func (w *DarwinWorker) runCommand(cmdStr string) (string, error) {
-	slog.Info("Executing command", "dir", w.workingDir, "command", cmdStr)
+func (w *DarwinWorker) runCommand(ctx context.Context, cmdStr string) (string, error) {
+	slog.InfoContext(ctx, "Executing command", "dir", w.workingDir, "command", cmdStr)
 
 	// Use zsh for macOS
 	// We want to persist directory changes, but since each command is isolated,
@@ -64,7 +65,7 @@ func (w *DarwinWorker) runCommand(cmdStr string) (string, error) {
 	// A robust way is to run: cd <workingDir> && <cmd> && pwd
 	fullCmd := fmt.Sprintf("cd %q && %s && pwd", w.workingDir, cmdStr)
 
-	cmd := exec.Command("/bin/zsh", "-c", fullCmd)
+	cmd := exec.CommandContext(ctx, "/bin/zsh", "-c", fullCmd)
 	outputBytes, err := cmd.CombinedOutput()
 	output := string(outputBytes)
 
@@ -85,10 +86,10 @@ func (w *DarwinWorker) runCommand(cmdStr string) (string, error) {
 	return output, nil
 }
 
-func (w *DarwinWorker) takeScreenshot() (string, error) {
+func (w *DarwinWorker) takeScreenshot(ctx context.Context) (string, error) {
 	tempFile := "/tmp/screenshot.png"
 	// -x: do not play sound, -t png: format, target file
-	cmd := exec.Command("screencapture", "-x", "-t", "png", tempFile)
+	cmd := exec.CommandContext(ctx, "screencapture", "-x", "-t", "png", tempFile)
 	if err := cmd.Run(); err != nil {
 		return "", fmt.Errorf("screencapture failed: %w", err)
 	}

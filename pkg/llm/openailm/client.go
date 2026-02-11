@@ -271,7 +271,7 @@ func (c *Client) StreamChat(ctx context.Context, messages []llm.Message, availab
 			}
 		}
 		if strings.TrimSpace(thinkingLogBuffer) != "" {
-			slog.Debug("Captured full thinking process", "provider", c.provider, "content", thinkingLogBuffer)
+			slog.DebugContext(ctx, "Captured full thinking process", "provider", c.provider, "content", thinkingLogBuffer)
 		}
 
 		// If we found tool calls, emit them now
