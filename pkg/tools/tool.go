@@ -30,6 +30,7 @@ type ContentBlock struct {
 	Type             string `json:"type"`                        // Data format: "text" or "image"
 	Text             string `json:"text,omitempty"`              // String content (for text type)
 	Data             string `json:"data,omitempty"`              // Base64 encoded image data (for image type)
+	MimeType         string `json:"mime_type,omitempty"`         // MIME type for image data (e.g., "image/jpeg")
 	IsThought        bool   `json:"is_thought,omitempty"`        // Whether this represents internal reasoning (mostly for internal passing)
 	ThoughtSignature []byte `json:"thought_signature,omitempty"` // Cryptographic or provider-specific token signature
 }

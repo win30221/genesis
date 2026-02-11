@@ -2,7 +2,7 @@
     "max_retries": 3,
     "retry_delay_ms": 500,
     "llm_timeout_min": 60,
-    "ollama_default_url": "http://localhost:11434",
+    "ollama_default_url": "http://localhost:11434/v1",
     "internal_channel_buffer": 100,
     "thinking_init_delay_ms": 500,
     "thinking_token_delay_ms": 200,

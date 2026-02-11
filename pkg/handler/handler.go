@@ -3,7 +3,6 @@ package handler
 import (
 	"context"
 	"crypto/rand"
-	"encoding/base64"
 	"fmt"
 	"genesis/pkg/config"
 	"genesis/pkg/gateway"
@@ -224,64 +223,7 @@ func (h *ChatHandler) processLLMStream(msg *gateway.UnifiedMessage) llm.Message 
 		h.history.Add(assistantMsg)
 
 		for _, tc := range assistantMsg.ToolCalls {
-			var resultBlocks []llm.ContentBlock
-			success := false
-
-			tool, ok := h.toolRegistry.Get(tc.Name)
-			if !ok {
-				errMsg := fmt.Sprintf("Error: Unknown tool '%s'", tc.Name)
-				slog.Error("Unknown tool call", "name", tc.Name)
-				resultBlocks = append(resultBlocks, llm.NewTextBlock(errMsg))
-			} else {
-				// Parse parameters
-				var args map[string]any
-				if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
-					errMsg := fmt.Sprintf("Error: Failed to parse tool arguments: %v", err)
-					slog.Error("Failed to parse tool args", "error", err)
-					resultBlocks = append(resultBlocks, llm.NewTextBlock(errMsg))
-				} else {
-					// Execute tool
-					slog.Info("Executing tool", "name", tc.Name, "args", args)
-					res, err := tool.Execute(args)
-					if err != nil {
-						errMsg := fmt.Sprintf("Error: Tool execution failed: %v", err)
-						slog.Error("Tool execution error", "error", err)
-						resultBlocks = append(resultBlocks, llm.NewTextBlock(errMsg))
-					} else {
-						success = true
-						// Convert tools.ContentBlock to llm.ContentBlock
-						for _, b := range res.Content {
-							if b.Type == "text" {
-								resultBlocks = append(resultBlocks, llm.NewTextBlock(b.Text))
-							} else if b.Type == "image" {
-								data, _ := base64.StdEncoding.DecodeString(b.Data)
-								resultBlocks = append(resultBlocks, llm.NewImageBlock(data, "image/png"))
-							}
-						}
-					}
-				}
-			}
-
-			// MUST add tool result to history to avoid OpenAI 400 error
-			toolResMsg := llm.Message{
-				Role:       "tool",
-				ToolCallID: tc.ID,
-				Content:    resultBlocks,
-			}
-			h.history.Add(toolResMsg)
-
-			// 2. Use independent stream to send tool results to frontend (Role: tool/system)
-			h.gw.SendSignal(msg.Session, "role:system")
-
-			resCh := make(chan llm.ContentBlock, len(toolResMsg.Content))
-			for _, b := range toolResMsg.Content {
-				resCh <- b
-			}
-			close(resCh)
-			if err := h.gw.StreamReply(msg.Session, resCh); err != nil {
-				slog.Error("Failed to stream tool result", "error", err)
-			}
-			_ = success // Keep track if needed later
+			h.resolveAndCommitToolCall(tc, msg)
 		}
 
 		// safeClose already called before recursion
@@ -444,6 +386,83 @@ Phase1Loop:
 	return msg, lastError
 }
 
+// handleToolCall encapsulates the logic for resolving, parsing, and executing
+// an individual tool call. It uses guard clauses to keep the logic flat.
+func (h *ChatHandler) handleToolCall(tc llm.ToolCall) []llm.ContentBlock {
+	// 1. Get tool from registry
+	// Normalize tool name: Some models might prepend "functions." to the tool name
+	// based on specific internal training or legacy patterns.
+	// We strip it to ensure compatibility with our internal registry.
+	cleanName := strings.TrimPrefix(tc.Name, "functions.")
+
+	tool, ok := h.toolRegistry.Get(cleanName)
+	if !ok {
+		slog.Error("Unknown tool call", "name", tc.Name, "clean_name", cleanName)
+		return []llm.ContentBlock{llm.NewTextBlock(fmt.Sprintf("Error: Unknown tool '%s'", tc.Name))}
+	}
+
+	// 2. Parse arguments
+	var args map[string]any
+	if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
+		slog.Error("Failed to parse tool args", "error", err)
+		return []llm.ContentBlock{llm.NewTextBlock(fmt.Sprintf("Error: Failed to parse tool arguments: %v", err))}
+	}
+
+	// 3. Execute tool
+	slog.Info("Executing tool", "name", tc.Name, "args", args)
+	res, err := tool.Execute(args)
+	if err != nil {
+		slog.Error("Tool execution error", "name", tc.Name, "error", err)
+		return []llm.ContentBlock{llm.NewTextBlock(fmt.Sprintf("Error: Tool execution failed: %v", err))}
+	}
+
+	// 4. Convert standardized result blocks
+	return convertToolResult(res)
+}
+
+// resolveAndCommitToolCall is a resilience wrapper that ensures Every tool call
+// results in a tool message being added to the history, even if the tool panics.
+func (h *ChatHandler) resolveAndCommitToolCall(tc llm.ToolCall, msg *gateway.UnifiedMessage) {
+	var resultBlocks []llm.ContentBlock
+
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("Tool execution panicked", "tool", tc.Name, "error", r)
+			resultBlocks = []llm.ContentBlock{llm.NewTextBlock("Error: Internal processing panic")}
+		}
+
+		// 1. MUST add tool result to history to avoid OpenAI 400 error
+		toolResMsg := llm.Message{
+			Role:       "tool",
+			ToolCallID: tc.ID,
+			ToolName:   tc.Name, // Added to support Gemini Tool Response
+			Content:    resultBlocks,
+		}
+		h.history.Add(toolResMsg)
+
+		// 2. Use independent stream to send tool results to frontend (Role: tool/system)
+		h.gw.SendSignal(msg.Session, "role:system")
+		h.streamBlocks(msg.Session, resultBlocks)
+	}()
+
+	resultBlocks = h.handleToolCall(tc)
+}
+
+// streamBlocks is a utility to pipe a slice of content blocks into the gateway's stream.
+func (h *ChatHandler) streamBlocks(session gateway.SessionContext, blocks []llm.ContentBlock) {
+	if len(blocks) == 0 {
+		return
+	}
+	resCh := make(chan llm.ContentBlock, len(blocks))
+	for _, b := range blocks {
+		resCh <- b
+	}
+	close(resCh)
+	if err := h.gw.StreamReply(session, resCh); err != nil {
+		slog.Error("Failed to stream blocks", "error", err)
+	}
+}
+
 // processChunk handles the low-level parsing of a single LLM StreamChunk.
 // It extracts text, reasoning tokens (thinking), and error messages, appending them
 // to the provided accumulation buffers. It also emits UI blocks if the chunk
@@ -539,14 +558,8 @@ func (h *ChatHandler) handleSlashCommand(msg *gateway.UnifiedMessage) {
 		return
 	}
 
-	// Send results
-	blocks := convertToolResult(res)
-	resCh := make(chan llm.ContentBlock, len(blocks))
-	for _, b := range blocks {
-		resCh <- b
-	}
-	close(resCh)
-	_ = h.gw.StreamReply(msg.Session, resCh)
+	// Send results using unified streaming helper
+	h.streamBlocks(msg.Session, convertToolResult(res))
 }
 
 // attemptRetry checks if a retry is allowed and, if so, increments the counter
@@ -615,8 +628,17 @@ func convertToolResult(res *tools.ToolResult) []llm.ContentBlock {
 	var blocks []llm.ContentBlock
 	for _, b := range res.Content {
 		if b.Type == llm.BlockTypeImage {
-			data, _ := tools.Base64Decode(b.Data)
-			blocks = append(blocks, llm.NewImageBlock(data, "image/png"))
+			data, err := tools.Base64Decode(b.Data)
+			if err != nil {
+				slog.Error("Failed to decode image data", "error", err)
+				blocks = append(blocks, llm.NewTextBlock(fmt.Sprintf("Error: Failed to decode image: %v", err)))
+				continue
+			}
+			mimeType := b.MimeType
+			if mimeType == "" {
+				mimeType = "image/png"
+			}
+			blocks = append(blocks, llm.NewImageBlock(data, mimeType))
 		} else {
 			blocks = append(blocks, llm.NewTextBlock(b.Text))
 		}

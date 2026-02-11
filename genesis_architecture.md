@@ -187,7 +187,7 @@ gw := gateway.NewGatewayBuilder().
 | `MaxContinuations` | 5 | 內容因長度截斷時的最大續發次數 |
 | `RetryDelayMs` | 500 | 重試間隔（毫秒） |
 | `LLMTimeoutMs` | 600000 | LLM 請求硬超時（10 分鐘） |
-| `OllamaDefaultURL` | `http://localhost:11434` | Ollama 預設端點 |
+| `OllamaDefaultURL` | `http://localhost:11434/v1` | Ollama 預設端點 |
 | `InternalChannelBuffer` | 100 | Go channel 串流緩衝大小 |
 | `ThinkingInitDelayMs` | 500 | 觸發 "thinking" 狀態的初始延遲 |
 | `ThinkingTokenDelayMs` | 200 | 串流中偵測暫停的門檻 |

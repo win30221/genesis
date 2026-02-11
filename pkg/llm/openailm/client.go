@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"reflect"
 	"strings"
+	"time"
 
 	openai "github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/option"
@@ -124,9 +125,9 @@ func (c *Client) StreamChat(ctx context.Context, messages []llm.Message, availab
 		opts = append(opts, option.WithJSONSet("top_p", p))
 	}
 
-	// Handle unified "max_tokens" option (mapped to max_completion_tokens for o1/newer models)
+	// Handle unified "max_tokens" option (mapped to max_output_tokens for o1/newer models)
 	if maxTok, ok := c.options["max_tokens"].(float64); ok {
-		opts = append(opts, option.WithJSONSet("max_completion_tokens", int(maxTok)))
+		opts = append(opts, option.WithJSONSet("max_output_tokens", int(maxTok)))
 	}
 
 	if tools := c.convertTools(availableTools); len(tools) > 0 {
@@ -281,6 +282,14 @@ func (c *Client) StreamChat(ctx context.Context, messages []llm.Message, availab
 			}
 			chunkCh <- llm.StreamChunk{
 				ToolCalls: toolCallsFound,
+			}
+		} else if assistantText := assistantTextAccumulator.String(); assistantText != "" {
+			// Fallback: Check for JSON-formatted tool calls in the text
+			extractedCalls := detectAndParseJsonToolCalls(assistantText)
+			if len(extractedCalls) > 0 {
+				chunkCh <- llm.StreamChunk{
+					ToolCalls: extractedCalls,
+				}
 			}
 		}
 
@@ -446,4 +455,69 @@ func normalizeStopReason(reason string) string {
 	default:
 		return reason
 	}
+}
+
+// detectAndParseJsonToolCalls attempts to find and parse JSON tool use structures
+// from a text blob. This is a fallback for models that don't use native tool calling.
+func detectAndParseJsonToolCalls(text string) []llm.ToolCall {
+	var calls []llm.ToolCall
+
+	// Try to find OpenAI-style tool_uses array or similar patterns
+	// Patterns to look for:
+	// {"tool_uses": [...]}
+	// {"action": "...", "params": {...}}
+
+	// 1. Check for {"tool_uses": ...}
+	if start := strings.Index(text, "{\"tool_uses\":"); start != -1 {
+		end := strings.LastIndex(text, "}")
+		if end > start {
+			jsonStr := text[start : end+1]
+			var wrapper struct {
+				ToolUses []struct {
+					RecipientName string         `json:"recipient_name"`
+					Parameters    map[string]any `json:"parameters"`
+				} `json:"tool_uses"`
+			}
+			if err := json.Unmarshal([]byte(jsonStr), &wrapper); err == nil && len(wrapper.ToolUses) > 0 {
+				for i, tu := range wrapper.ToolUses {
+					args, _ := json.Marshal(tu.Parameters)
+					calls = append(calls, llm.ToolCall{
+						ID:   fmt.Sprintf("json_%d_%d", time.Now().Unix(), i),
+						Name: tu.RecipientName,
+						Function: llm.FunctionCall{
+							Name:      tu.RecipientName,
+							Arguments: string(args),
+						},
+					})
+				}
+				return calls
+			}
+		}
+	}
+
+	// 2. Check for single action object
+	if start := strings.Index(text, "{\"action\":"); start != -1 {
+		end := strings.LastIndex(text, "}")
+		if end > start {
+			jsonStr := text[start : end+1]
+			var tu struct {
+				Action string         `json:"action"`
+				Params map[string]any `json:"params"`
+			}
+			if err := json.Unmarshal([]byte(jsonStr), &tu); err == nil && tu.Action != "" {
+				args, _ := json.Marshal(tu.Params)
+				calls = append(calls, llm.ToolCall{
+					ID:   fmt.Sprintf("json_single_%d", time.Now().Unix()),
+					Name: tu.Action,
+					Function: llm.FunctionCall{
+						Name:      tu.Action,
+						Arguments: string(args),
+					},
+				})
+				return calls
+			}
+		}
+	}
+
+	return nil
 }

@@ -293,7 +293,7 @@ func (g *GeminiClient) convertMessages(messages []llm.Message) ([]*genai.Content
 				Parts: []*genai.Part{
 					{
 						FunctionResponse: &genai.FunctionResponse{
-							Name:     msg.Role, // Simplified for now
+							Name:     msg.ToolName,
 							Response: map[string]any{"result": msg.Content[0].Text},
 						},
 					},

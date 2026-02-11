@@ -25,6 +25,9 @@ type Message struct {
 	// contains a tool result. This field is only valid when Role is "tool".
 	ToolCallID string `json:"tool_call_id,omitempty"`
 
+	// ToolName is the name of the tool being called. Required for Gemini tool results.
+	ToolName string `json:"tool_name,omitempty"`
+
 	// Usage provides token metrics and termination metadata for this specific
 	// exchange, typically populated for assistant responses.
 	Usage *LLMUsage `json:"usage,omitempty"`

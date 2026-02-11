@@ -87,7 +87,7 @@ func DefaultSystemConfig() *SystemConfig {
 		MaxContinuations:      5,
 		RetryDelayMs:          500,
 		LLMTimeoutMs:          600000,
-		OllamaDefaultURL:      "http://localhost:11434",
+		OllamaDefaultURL:      "http://localhost:11434/v1",
 		InternalChannelBuffer: 100,
 		ThinkingInitDelayMs:   500,
 		ThinkingTokenDelayMs:  200,
