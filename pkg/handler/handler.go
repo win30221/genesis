@@ -159,14 +159,6 @@ func (h *ChatHandler) processLLMStream(ctx context.Context, msg *gateway.Unified
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	// Set up "thinking" timer
-	thinkingSent := false
-	delay := time.Duration(h.systemConfig.ThinkingInitDelayMs) * time.Millisecond
-	initTimer := time.AfterFunc(delay, func() {
-		h.gw.SendSignal(msg.Session, "thinking")
-		thinkingSent = true
-	})
-
 	// Select the correct tool format
 	var availableTools any
 	if h.systemConfig.EnableTools && !msg.NoTools {
@@ -182,7 +174,6 @@ func (h *ChatHandler) processLLMStream(ctx context.Context, msg *gateway.Unified
 	}
 
 	chunkCh, err := h.client.StreamChat(ctx, h.history.GetMessages(), availableTools)
-	initTimer.Stop()
 
 	if err != nil {
 		slog.ErrorContext(ctx, "LLM stream init failed", "error", err)
@@ -212,7 +203,7 @@ func (h *ChatHandler) processLLMStream(ctx context.Context, msg *gateway.Unified
 	defer safeClose()
 
 	// Handle chunks
-	assistantMsg, streamErr := h.collectChunks(ctx, msg.Session, chunkCh, blockCh, thinkingSent)
+	assistantMsg, streamErr := h.collectChunks(ctx, msg.Session, chunkCh, blockCh)
 
 	// 1. End of LLM turn, close current stream block in time (e.g., block containing thinking process)
 	safeClose()
@@ -285,11 +276,10 @@ func (h *ChatHandler) processLLMStream(ctx context.Context, msg *gateway.Unified
 //   - session: Target session for sending thinking/UI signals.
 //   - chunkCh: Inbound channel providing stream fragments from the LLM client.
 //   - blockCh: Outbound channel for forwarding processed ContentBlocks to the Gateway.
-//   - alreadySentThinking: Flag to prevent redundant thinking UI signals in recursive calls.
 //
 // Returns:
 //   - The fully aggregated message and any error encountered during consumption.
-func (h *ChatHandler) collectChunks(ctx context.Context, session gateway.SessionContext, chunkCh <-chan llm.StreamChunk, blockCh chan<- llm.ContentBlock, alreadySentThinking bool) (llm.Message, error) {
+func (h *ChatHandler) collectChunks(ctx context.Context, session gateway.SessionContext, chunkCh <-chan llm.StreamChunk, blockCh chan<- llm.ContentBlock) (llm.Message, error) {
 	msg := llm.Message{
 		Role:    "assistant",
 		Content: []llm.ContentBlock{},
@@ -297,14 +287,10 @@ func (h *ChatHandler) collectChunks(ctx context.Context, session gateway.Session
 	var lastError error
 
 	// Setup "thinking" timer
-	var thinkingTimer *time.Timer
-	var timerChan <-chan time.Time
-	if !alreadySentThinking {
-		delay := time.Duration(h.systemConfig.ThinkingTokenDelayMs) * time.Millisecond
-		thinkingTimer = time.NewTimer(delay)
-		defer thinkingTimer.Stop()
-		timerChan = thinkingTimer.C
-	}
+	delay := time.Duration(h.systemConfig.ThinkingInitDelayMs) * time.Millisecond
+	thinkingTimer := time.NewTimer(delay)
+	defer thinkingTimer.Stop()
+	timerChan := thinkingTimer.C
 
 	for {
 		select {
