@@ -189,7 +189,6 @@ gw := gateway.NewGatewayBuilder().
 | `OllamaDefaultURL` | `http://localhost:11434/v1` | Ollama 預設端點 |
 | `InternalChannelBuffer` | 100 | Go channel 串流緩衝大小 |
 | `ThinkingInitDelayMs` | 500 | 觸發 "thinking" 狀態的初始延遲 |
-| `ThinkingTokenDelayMs` | 200 | 串流中偵測暫停的門檻 |
 | `TelegramMessageLimit` | 4000 | Telegram 單則訊息上限字數 |
 | `DownloadTimeoutMs` | 10000 | 下載外部媒體的超時 |
 | `ShowThinking` | `true` | 是否向使用者展示 AI 思考過程 |
@@ -640,3 +639,4 @@ flowchart TD
 | 19 | `llm/openailm` | 清潔度 | 移除重複的除錯日誌代碼 | 導入 `StreamDebugger` |
 | 20 | `handler.go` | 功能 | 移除自動續寫邏輯 | 截斷時直接回傳部分內容 (Client-side decision) |
 | 21 | `config.go` | 配置 | 移除 `MaxContinuations` | 配合續寫邏輯移除 |
+| 22 | `config.go` | 配置 | 移除 `ThinkingTokenDelayMs` | 移除未使用設定 |

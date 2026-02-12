@@ -52,9 +52,6 @@ type SystemConfig struct {
 	// ThinkingInitDelayMs is the time to wait (in milliseconds) after a
 	// user message before showing the "AI is thinking" status in the UI.
 	ThinkingInitDelayMs int `json:"thinking_init_delay_ms"`
-	// ThinkingTokenDelayMs is the threshold (in milliseconds) used to
-	// detect if the AI has paused during streaming, triggering a thinking signal.
-	ThinkingTokenDelayMs int `json:"thinking_token_delay_ms"`
 	// TelegramMessageLimit is the maximum character count for a single
 	// Telegram message. Longer responses will be split into multiple chunks.
 	TelegramMessageLimit int `json:"telegram_message_limit"`
@@ -86,7 +83,6 @@ func DefaultSystemConfig() *SystemConfig {
 		OllamaDefaultURL:      "http://localhost:11434/v1",
 		InternalChannelBuffer: 100,
 		ThinkingInitDelayMs:   500,
-		ThinkingTokenDelayMs:  200,
 		TelegramMessageLimit:  4000,
 		DownloadTimeoutMs:     10000,
 		ShowThinking:          true,
