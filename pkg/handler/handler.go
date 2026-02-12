@@ -228,10 +228,11 @@ func (h *ChatHandler) processLLMStream(ctx context.Context, msg *gateway.Unified
 	}
 
 	hasContent, hasThinking, preview := summarizeContent(assistantMsg)
+
 	// A response is normal if:
 	// 1. No stream error occurred.
 	// 2. We actually got some content or thinking process.
-	// 3. It stopped normally (stop) or reason is unknown but we have content.
+	// 3. It stopped normally (stop) or reason is unknown.
 	// Note: StopReasonLength is NOT normal — it should trigger continuation logic.
 	isNormal := streamErr == nil && (hasContent || hasThinking) && (reason == llm.StopReasonStop || reason == "UNKNOWN")
 
@@ -536,22 +537,36 @@ func (h *ChatHandler) attemptRetry(ctx context.Context, msg *gateway.UnifiedMess
 	return true
 }
 
-// summarizeContent scans the assistant message and returns whether it has
-// text content, thinking content, and a truncated preview string for logging.
+// summarizeContent performs a single pass over the message to derive:
+// 1. Whether it contains valid text content (hasContent).
+// 2. Whether it contains thinking process (hasThinking).
+// 3. A short preview string for logging (truncated to 100 chars).
+// This optimization avoids multiple traversals and full string allocations.
 func summarizeContent(msg llm.Message) (hasContent, hasThinking bool, preview string) {
 	var sb strings.Builder
+	// Pre-allocate buffer for preview to avoid small reallocations
+	sb.Grow(100)
+
 	for _, b := range msg.Content {
-		if b.Type == llm.BlockTypeThinking && b.Text != "" {
+		if b.Type == llm.BlockTypeThinking && len(b.Text) > 0 {
 			hasThinking = true
-		}
-		if b.Type == llm.BlockTypeText && b.Text != "" {
+		} else if b.Type == llm.BlockTypeText && len(b.Text) > 0 {
 			hasContent = true
+			// Append to preview if not full
+			if sb.Len() < 100 {
+				remaining := 100 - sb.Len()
+				if len(b.Text) > remaining {
+					sb.WriteString(b.Text[:remaining])
+				} else {
+					sb.WriteString(b.Text)
+				}
+			}
 		}
-		sb.WriteString(b.Text)
 	}
+
 	preview = sb.String()
-	if len(preview) > 100 {
-		preview = preview[:100] + "..."
+	if len(preview) >= 100 {
+		preview += "..."
 	}
 	return
 }
