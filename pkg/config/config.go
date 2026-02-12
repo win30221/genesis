@@ -37,9 +37,6 @@ type SystemConfig struct {
 	// MaxRetries is the number of times the system will attempt to
 	// recover from a transient LLM or network error before giving up.
 	MaxRetries int `json:"max_retries"`
-	// MaxContinuations is the maximum number of automatic content
-	// continuation requests when the LLM response is truncated due to length limits.
-	MaxContinuations int `json:"max_continuations"`
 	// RetryDelayMs is the duration to wait (in milliseconds) between
 	// consecutive retry attempts.
 	RetryDelayMs int `json:"retry_delay_ms"`
@@ -84,7 +81,6 @@ type SystemConfig struct {
 func DefaultSystemConfig() *SystemConfig {
 	return &SystemConfig{
 		MaxRetries:            3,
-		MaxContinuations:      5,
 		RetryDelayMs:          500,
 		LLMTimeoutMs:          600000,
 		OllamaDefaultURL:      "http://localhost:11434/v1",

@@ -187,9 +187,6 @@ func (g *GeminiClient) StreamChat(ctx context.Context, messages []llm.Message, a
 			for _, candidate := range resp.Candidates {
 				if candidate.FinishReason != "" && lastUsage != nil {
 					lastUsage.StopReason = normalizeStopReason(string(candidate.FinishReason))
-					if lastUsage.StopReason == llm.StopReasonLength {
-						chunkCh <- llm.NewErrorChunk("Response truncated due to max tokens limit. You might want to adjust your prompt or settings.", nil, false)
-					}
 				}
 
 				if candidate.Content != nil {

@@ -184,7 +184,6 @@ gw := gateway.NewGatewayBuilder().
 | 欄位 | 預設值 | 說明 |
 |---|---|---|
 | `MaxRetries` | 3 | LLM/網路錯誤最大重試次數 |
-| `MaxContinuations` | 5 | 內容因長度截斷時的最大續發次數 |
 | `RetryDelayMs` | 500 | 重試間隔（毫秒） |
 | `LLMTimeoutMs` | 600000 | LLM 請求硬超時（10 分鐘） |
 | `OllamaDefaultURL` | `http://localhost:11434/v1` | Ollama 預設端點 |
@@ -328,7 +327,7 @@ type ChannelFactory interface {
 | `NewMessageHandler(...)` | 工廠函數：初始化 Handler → 註冊工具 → 設定歷史 → 回傳閉包 |
 | `initializeHistory()` | 若歷史為空，注入系統提示詞作為首條訊息 |
 | `OnMessage(msg)` | **入口**：攔截 Slash → 構建 User Message → 觸發 LLM → 保存結果 |
-| `processLLMStream(msg)` | **核心迴圈**：超時控制 → 串流 → 工具執行遞迴 → 錯誤重試 → 續發 |
+| `processLLMStream(msg)` | **核心迴圈**：超時控制 → 串流 → 工具執行遞迴 → 錯誤重試（截斷不再自動續發） |
 | `collectChunks(...)` | 串流消費器：兩階段處理（等首 chunk + 批量處理）→ 組裝 Message |
 | `processChunk(...)` | 單 chunk 路由：text / thinking / image / error 分流處理 |
 | `handleSlashCommand(msg)` | Slash 命令處理：解析 → 工具查找 → 執行 → 回傳結果 |
@@ -349,7 +348,7 @@ flowchart TD
     H --> I["遞迴 processLLMStream"]
     G -->|否| J{"正常結束?"}
     J -->|是| K["回傳 assistantMsg"]
-    J -->|截斷 length| L["attemptRetry/續發 → 遞迴"]
+    J -->|截斷 length| L["Log 警告 → 回傳部分內容"]
     J -->|異常| M["attemptRetry → 遞迴或放棄"]
 ```
 
@@ -639,3 +638,5 @@ flowchart TD
 | 17 | `llm/debugger.go` | 架構 | LLM 客戶端的除錯日誌邏輯重複 (Open/Close File) | 抽取為 `StreamDebugger` 共用工具 |
 | 18 | `llm/gemini` | 清潔度 | 移除未使用的 `os`, `path` 等 import | 導入 `StreamDebugger` |
 | 19 | `llm/openailm` | 清潔度 | 移除重複的除錯日誌代碼 | 導入 `StreamDebugger` |
+| 20 | `handler.go` | 功能 | 移除自動續寫邏輯 | 截斷時直接回傳部分內容 (Client-side decision) |
+| 21 | `config.go` | 配置 | 移除 `MaxContinuations` | 配合續寫邏輯移除 |

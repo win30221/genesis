@@ -228,34 +228,21 @@ func (h *ChatHandler) processLLMStream(ctx context.Context, msg *gateway.Unified
 	}
 
 	hasContent, hasThinking, preview := summarizeContent(assistantMsg)
-	hasToolCalls := len(assistantMsg.ToolCalls) > 0
 	// A response is normal if:
-	// 1. It stopped because of a valid reason (stop/length) OR it's UNKNOWN but we have content and no stream error.
-	// 2. No stream error occurred.
-	// 3. We actually got some content, thinking process, or tool calls.
-	isNormal := streamErr == nil && (hasContent || hasThinking || hasToolCalls) && (reason == llm.StopReasonStop || reason == llm.StopReasonLength || reason == "UNKNOWN")
+	// 1. No stream error occurred.
+	// 2. We actually got some content or thinking process.
+	// 3. It stopped normally (stop) or reason is unknown but we have content.
+	// Note: StopReasonLength is NOT normal — it should trigger continuation logic.
+	isNormal := streamErr == nil && (hasContent || hasThinking) && (reason == llm.StopReasonStop || reason == "UNKNOWN")
 
 	if !isNormal {
 		// 3.1 Handle continuation logic (StopReason == "length")
-		if reason == llm.StopReasonLength && (hasContent || hasThinking) {
-			maxCont := h.systemConfig.MaxContinuations
-			if msg.ContinueCount < maxCont {
-				msg.ContinueCount++
-				slog.InfoContext(ctx, "Truncation detected, continuing", "thinking", hasThinking, "content", hasContent, "continuation", fmt.Sprintf("%d/%d", msg.ContinueCount, maxCont), "preview", preview)
-
-				h.gw.SendReply(msg.Session, fmt.Sprintf("⚠️ Content truncated due to length, attempting to continue (%d/%d)...", msg.ContinueCount, maxCont))
-
-				// Store current partial response in history
-				h.history.Add(assistantMsg)
-
-				time.Sleep(time.Duration(h.systemConfig.RetryDelayMs) * time.Millisecond)
-				safeClose()
-				return h.processLLMStream(ctx, msg)
-			} else {
-				slog.WarnContext(ctx, "Max continuation reached", "max", maxCont)
-				h.gw.SendReply(msg.Session, "❌ Max continuation reached, forced stop.")
-				return assistantMsg
-			}
+		// User requested to REMOVE automatic continuation.
+		// If truncated, we just return what we have and let the user decide.
+		if reason == llm.StopReasonLength {
+			slog.InfoContext(ctx, "Response truncated by length limit", "thinking", hasThinking, "content", hasContent)
+			h.gw.SendReply(msg.Session, "⚠️ Response truncated due to length limit.")
+			return assistantMsg
 		}
 
 		// 3.2 Handle general retry logic

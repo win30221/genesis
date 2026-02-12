@@ -249,12 +249,21 @@ func (c *Client) StreamChat(ctx context.Context, messages []llm.Message, availab
 
 			case responses.ResponseCompletedEvent:
 				lastFinishReason = "stop"
+				stopReason := llm.StopReasonStop
+				// Detect truncation: some providers (e.g. Ollama) send response.completed
+				// even when output was truncated by max_output_tokens
+				if variant.Response.MaxOutputTokens > 0 &&
+					variant.Response.Usage.OutputTokens >= variant.Response.MaxOutputTokens {
+					lastFinishReason = "length"
+					stopReason = llm.StopReasonLength
+				}
+
 				if variant.Response.Usage.TotalTokens > 0 {
 					lastUsage = &llm.LLMUsage{
 						PromptTokens:     int(variant.Response.Usage.InputTokens),
 						CompletionTokens: int(variant.Response.Usage.OutputTokens),
 						TotalTokens:      int(variant.Response.Usage.TotalTokens),
-						StopReason:       llm.StopReasonStop,
+						StopReason:       stopReason,
 					}
 				}
 
