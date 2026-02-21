@@ -101,7 +101,7 @@ func (g *GeminiClient) StreamChat(ctx context.Context, messages []llm.Message, a
 	chunkCh := make(chan llm.StreamChunk, 100)
 	startResultCh := make(chan error, 1) // Unbuffered to detect if reader is present
 
-	slog.DebugContext(ctx, "Streaming", "provider", "gemini", "model", g.model)
+	slog.InfoContext(ctx, "Streaming", "provider", g.Provider(), "model", g.model)
 
 	go func() {
 		defer close(chunkCh)
@@ -145,7 +145,7 @@ func (g *GeminiClient) StreamChat(ctx context.Context, messages []llm.Message, a
 		var lastUsage *llm.LLMUsage
 
 		// StreamDebugger handles file creation and lifecycle
-		debugger := llm.NewStreamDebugger(ctx, "gemini", g.sysConfig)
+		debugger := llm.NewStreamDebugger(ctx, g.Provider(), g.sysConfig)
 		defer debugger.Close()
 
 		for resp, err := range iter {
@@ -159,7 +159,7 @@ func (g *GeminiClient) StreamChat(ctx context.Context, messages []llm.Message, a
 				// Try to process last resp if available
 				// Google GenAI SDK iterator might return some data along with the error
 				if resp == nil {
-					slog.ErrorContext(ctx, "Stream error", "provider", "gemini", "error", err)
+					slog.ErrorContext(ctx, "Stream error", "provider", g.Provider(), "error", err)
 					if !started {
 						startResultCh <- err
 					} else {
@@ -169,7 +169,7 @@ func (g *GeminiClient) StreamChat(ctx context.Context, messages []llm.Message, a
 					break
 				}
 				// If err != nil but resp != nil, continue processing this resp, then handle error in next iteration
-				slog.WarnContext(ctx, "Stream error with data", "provider", "gemini", "error", err)
+				slog.WarnContext(ctx, "Stream error with data", "provider", g.Provider(), "error", err)
 			}
 
 			if !started {
@@ -244,7 +244,7 @@ func (g *GeminiClient) StreamChat(ctx context.Context, messages []llm.Message, a
 									"gemini_thought_signature": part.ThoughtSignature,
 								},
 							})
-							slog.DebugContext(ctx, "Tool call", "provider", "gemini", "name", part.FunctionCall.Name, "args", string(argsB))
+							slog.DebugContext(ctx, "Tool call", "provider", g.Provider(), "name", part.FunctionCall.Name, "args", string(argsB))
 						}
 					}
 

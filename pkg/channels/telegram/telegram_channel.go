@@ -360,7 +360,7 @@ func (t *TelegramChannel) handleMediaGroup(ctx api.ChannelContext, groupID strin
 				// Clean up empty items (failed downloads)
 				var successfulFiles []api.FileAttachment
 				for _, f := range files {
-					if f.Data != nil {
+					if f.Path != "" {
 						successfulFiles = append(successfulFiles, f)
 					}
 				}

@@ -80,6 +80,7 @@ func (c *Client) IsTransientError(err error) bool {
 }
 
 func (c *Client) StreamChat(ctx context.Context, messages []llm.Message, availableTools []llm.Tool) (<-chan llm.StreamChunk, error) {
+	slog.InfoContext(ctx, "Streaming", "provider", c.Provider(), "model", c.model)
 	chunkCh := make(chan llm.StreamChunk, 100)
 
 	// Convert messages
@@ -143,7 +144,7 @@ func (c *Client) StreamChat(ctx context.Context, messages []llm.Message, availab
 		var lastUsage *llm.LLMUsage
 
 		// StreamDebugger handles file creation and lifecycle
-		debugger := llm.NewStreamDebugger(ctx, c.provider, c.sysConfig)
+		debugger := llm.NewStreamDebugger(ctx, c.Provider(), c.sysConfig)
 		defer debugger.Close()
 
 		var assistantTextAccumulator strings.Builder
@@ -279,7 +280,7 @@ func (c *Client) StreamChat(ctx context.Context, messages []llm.Message, availab
 			}
 		}
 		if strings.TrimSpace(thinkingLogBuffer) != "" {
-			slog.DebugContext(ctx, "Captured full thinking process", "provider", c.provider, "content", thinkingLogBuffer)
+			slog.DebugContext(ctx, "Captured full thinking process", "provider", c.Provider(), "model", c.model, "content", thinkingLogBuffer)
 		}
 
 		// If we found tool calls, emit them now
