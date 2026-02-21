@@ -2,14 +2,28 @@ package llm
 
 import (
 	"encoding/base64"
+	"fmt"
+	"genesis/pkg/utils"
+	"os"
 	"strings"
 	"time"
 )
+
+// Tool represents the minimal interface required for an LLM provider to
+// understand and format a tool for its API.
+type Tool interface {
+	Name() string
+	Description() string
+	Parameters() map[string]any
+	RequiredParameters() []string
+}
 
 // Message represents a single unit of conversation in a multi-modal chat history.
 // It maps to common LLM interaction formats like OpenAI or Gemini messages,
 // supporting roles, content blocks, and tool-related metadata.
 type Message struct {
+	// ID is a unique, time-sorted identifier for the message (e.g., ObjectID style).
+	ID string `json:"id,omitempty"`
 	// Role defines the author of the message: "user", "assistant", "system", or "tool".
 	Role string `json:"role"`
 	// Content contains an ordered slice of multimodel blocks (text, images, thinking, etc.).
@@ -83,6 +97,8 @@ type ImageSource struct {
 	Data []byte `json:"-"`
 	// URL holds the address for remote image references.
 	URL string `json:"url,omitempty"`
+	// Path holds the local file system path for stored images.
+	Path string `json:"path,omitempty"`
 }
 
 // MarshalJSON custom JSON serialization (converts Data to base64)
@@ -92,11 +108,13 @@ func (is *ImageSource) MarshalJSON() ([]byte, error) {
 		MediaType string `json:"media_type"`
 		Data      string `json:"data,omitempty"`
 		URL       string `json:"url,omitempty"`
+		Path      string `json:"path,omitempty"`
 	}
 	a := alias{
 		Type:      is.Type,
 		MediaType: is.MediaType,
 		URL:       is.URL,
+		Path:      is.Path,
 	}
 	if is.Type == "base64" && len(is.Data) > 0 {
 		a.Data = base64.StdEncoding.EncodeToString(is.Data)
@@ -111,6 +129,7 @@ func (is *ImageSource) UnmarshalJSON(data []byte) error {
 		Type       string `json:"type"`
 		MediaType  string `json:"media_type"`
 		URL        string `json:"url"`
+		Path       string `json:"path"`
 	}{}
 
 	if err := json.Unmarshal(data, &aux); err != nil {
@@ -120,6 +139,7 @@ func (is *ImageSource) UnmarshalJSON(data []byte) error {
 	is.Type = aux.Type
 	is.MediaType = aux.MediaType
 	is.URL = aux.URL
+	is.Path = aux.Path
 
 	if aux.DataBase64 != "" {
 		decoded, err := base64.StdEncoding.DecodeString(aux.DataBase64)
@@ -129,6 +149,23 @@ func (is *ImageSource) UnmarshalJSON(data []byte) error {
 		is.Data = decoded
 	}
 
+	return nil
+}
+
+// LoadData reads the image data from Path if type is "file" and hydrates the Data field.
+// This is useful for UI contexts where local file paths are not accessible.
+func (is *ImageSource) LoadData() error {
+	if is.Type != "file" || is.Path == "" {
+		return nil
+	}
+
+	data, err := os.ReadFile(is.Path)
+	if err != nil {
+		return fmt.Errorf("failed to load image data from %s: %w", is.Path, err)
+	}
+
+	is.Data = data
+	is.Type = "base64"
 	return nil
 }
 
@@ -161,6 +198,7 @@ type StreamChunk struct {
 // NewTextMessage creates a Message with the specified role and a single text block.
 func NewTextMessage(role, text string) Message {
 	return Message{
+		ID:   utils.GenerateID(),
 		Role: role,
 		Content: []ContentBlock{{
 			Type: BlockTypeText,
@@ -266,6 +304,18 @@ func NewImageBlock(data []byte, mimeType string) ContentBlock {
 			Type:      "base64",
 			MediaType: mimeType,
 			Data:      data,
+		},
+	}
+}
+
+// NewImageBlockFromFile creates an image block linked to a local file
+func NewImageBlockFromFile(path, mimeType string) ContentBlock {
+	return ContentBlock{
+		Type: BlockTypeImage,
+		Source: &ImageSource{
+			Type:      "file",
+			MediaType: mimeType,
+			Path:      path,
 		},
 	}
 }

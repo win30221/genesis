@@ -47,12 +47,12 @@ var osActionRegistry = map[string]ActionSpec{
 	},
 	ActionRunCommand: {
 		Name:          ActionRunCommand,
-		Description:   "Execute system shell command",
+		Description:   "Execute a system command",
 		RequireParams: true,
 		ParamSchema: map[string]any{
 			"command": map[string]any{
 				"type":        "string",
-				"description": "Command to execute (e.g., 'dir', 'ls -la')",
+				"description": "System command to execute",
 			},
 		},
 		Validate: func(params map[string]any) error {
@@ -117,11 +117,7 @@ func (t *OSTool) Parameters() map[string]any {
 		},
 		"command": map[string]any{
 			"type":        "string",
-			"description": "Command to execute (for 'run_command' action, e.g., 'dir', 'ls -la')",
-		},
-		"params": map[string]any{
-			"type":        "object",
-			"description": "[Deprecated] Action parameters object (use top-level fields like 'command' instead)",
+			"description": "System command to execute (for 'run_command' action)",
 		},
 	}
 }
@@ -201,23 +197,11 @@ func (t *OSTool) parseAndValidateArgs(args map[string]any) (ActionSpec, map[stri
 		return ActionSpec{}, nil, fmt.Errorf("unsupported action: %s", actionName)
 	}
 
-	// Extract params (with backward compatibility)
-	// Priority: 1. Top-level arg; 2. Inside "params" object
+	// All top-level args except "action" are treated as params
 	params := make(map[string]any)
-
-	// Copy all top-level args except "action" into params
 	for k, v := range args {
-		if k != "action" && k != "params" {
+		if k != "action" {
 			params[k] = v
-		}
-	}
-
-	// Merge from "params" object if exists
-	if raw, ok := args["params"]; ok {
-		if p, ok := raw.(map[string]any); ok {
-			for k, v := range p {
-				params[k] = v
-			}
 		}
 	}
 

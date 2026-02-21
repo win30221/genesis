@@ -16,7 +16,7 @@ func (f *OllamaFactory) Create(cfg llm.ProviderGroupConfig, sys *config.SystemCo
 	for _, model := range cfg.Models {
 		baseURL := cfg.BaseURL
 		// Factory guarantees a valid URL (if not set in config, it remains empty or client uses default)
-		client, err := NewOllamaClient(model, baseURL, cfg.Options)
+		client, err := NewOllamaClient(model, baseURL, cfg.Options, sys)
 		if err != nil {
 			slog.Error("Failed to create Ollama client", "model", model, "error", err)
 			continue

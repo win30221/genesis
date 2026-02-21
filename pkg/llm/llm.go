@@ -68,15 +68,11 @@ type LLMClient interface {
 	//   - availableTools: Optional tool definitions (schema) for agentic capabilities.
 	// Returns:
 	//   - A channel emitting StreamChunks or an error if initialization fails.
-	StreamChat(ctx context.Context, messages []Message, availableTools any) (<-chan StreamChunk, error)
+	StreamChat(ctx context.Context, messages []Message, availableTools []Tool) (<-chan StreamChunk, error)
 
 	// IsTransientError identifies if the given error is recoverable via retries
 	// (e.g., rate limit, server overload).
 	IsTransientError(err error) bool
-
-	// SetDebug toggles the persistence of raw streaming data chunks to the disk
-	// for forensic investigation of LLM behavior.
-	SetDebug(enabled bool)
 }
 
 // FallbackClient implements the LLMClient interface by providing a secondary
@@ -88,14 +84,7 @@ type FallbackClient struct {
 	RetryDelay time.Duration // Base delay between transient error retries
 }
 
-// SetDebug implements the LLMClient interface, delegating the setting to all sub-clients
-func (f *FallbackClient) SetDebug(enabled bool) {
-	for _, client := range f.Clients {
-		client.SetDebug(enabled)
-	}
-}
-
-func (f *FallbackClient) StreamChat(ctx context.Context, messages []Message, availableTools any) (<-chan StreamChunk, error) {
+func (f *FallbackClient) StreamChat(ctx context.Context, messages []Message, availableTools []Tool) (<-chan StreamChunk, error) {
 	var lastErr error
 	for i, client := range f.Clients {
 		if i > 0 {

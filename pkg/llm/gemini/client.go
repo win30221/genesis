@@ -4,29 +4,27 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"genesis/pkg/config"
 	"genesis/pkg/llm"
 	"log/slog"
 	"strings"
+
+	"os"
 
 	"google.golang.org/genai"
 )
 
 // GeminiClient Google Gemini API client
 type GeminiClient struct {
-	client       *genai.Client
-	model        string
-	useThought   bool
-	debugEnabled bool
-	options      map[string]any
-}
-
-// SetDebug implements the llm.LLMClient interface
-func (g *GeminiClient) SetDebug(enabled bool) {
-	g.debugEnabled = enabled
+	client     *genai.Client
+	model      string
+	useThought bool
+	sysConfig  *config.SystemConfig
+	options    map[string]any
 }
 
 // NewGeminiClient creates a Gemini client with a single model and API key
-func NewGeminiClient(apiKey string, model string, useThought bool, options map[string]any) *GeminiClient {
+func NewGeminiClient(apiKey string, model string, useThought bool, options map[string]any, sys *config.SystemConfig) *GeminiClient {
 	ctx := context.Background()
 	client, err := genai.NewClient(ctx, &genai.ClientConfig{
 		APIKey:  apiKey,
@@ -41,6 +39,7 @@ func NewGeminiClient(apiKey string, model string, useThought bool, options map[s
 		model:      model,
 		useThought: useThought,
 		options:    options,
+		sysConfig:  sys,
 	}
 }
 
@@ -61,33 +60,41 @@ func formatModality(details []*genai.ModalityTokenCount) string {
 }
 
 // StreamChat implements llm.LLMClient.StreamChat
-func (g *GeminiClient) StreamChat(ctx context.Context, messages []llm.Message, availableTools any) (<-chan llm.StreamChunk, error) {
+func (g *GeminiClient) StreamChat(ctx context.Context, messages []llm.Message, availableTools []llm.Tool) (<-chan llm.StreamChunk, error) {
 	// Convert messages
 	apiMessages, systemInstruction := g.convertMessages(messages)
 
 	// Convert tools
 	var genaiTools []*genai.Tool
-	if availableTools != nil {
-		if tools, ok := availableTools.([]map[string]any); ok {
-			var fds []*genai.FunctionDeclaration
-			for _, t := range tools {
-				fd := &genai.FunctionDeclaration{
-					Name:        t["name"].(string),
-					Description: t["description"].(string),
-				}
-				if params, ok := t["parameters"].(map[string]any); ok {
-					schemaB, _ := json.Marshal(params)
-					var schema genai.Schema
-					json.Unmarshal(schemaB, &schema)
-					fd.Parameters = &schema
-				}
-				fds = append(fds, fd)
+	if len(availableTools) > 0 {
+		var fds []*genai.FunctionDeclaration
+		for _, t := range availableTools {
+			fd := &genai.FunctionDeclaration{
+				Name:        t.Name(),
+				Description: t.Description(),
 			}
-			if len(fds) > 0 {
-				genaiTools = append(genaiTools, &genai.Tool{
-					FunctionDeclarations: fds,
-				})
+			params := t.Parameters()
+			if params != nil {
+				// Gemini (via genai SDK) also expects a full JSON Schema object
+				fullSchema := map[string]any{
+					"type":       "object",
+					"properties": params,
+				}
+				if required := t.RequiredParameters(); len(required) > 0 {
+					fullSchema["required"] = required
+				}
+
+				schemaB, _ := json.Marshal(fullSchema)
+				var schema genai.Schema
+				json.Unmarshal(schemaB, &schema)
+				fd.Parameters = &schema
 			}
+			fds = append(fds, fd)
+		}
+		if len(fds) > 0 {
+			genaiTools = append(genaiTools, &genai.Tool{
+				FunctionDeclarations: fds,
+			})
 		}
 	}
 
@@ -138,7 +145,7 @@ func (g *GeminiClient) StreamChat(ctx context.Context, messages []llm.Message, a
 		var lastUsage *llm.LLMUsage
 
 		// StreamDebugger handles file creation and lifecycle
-		debugger := llm.NewStreamDebugger(ctx, "gemini", g.debugEnabled)
+		debugger := llm.NewStreamDebugger(ctx, "gemini", g.sysConfig)
 		defer debugger.Close()
 
 		for resp, err := range iter {
@@ -334,13 +341,26 @@ func (g *GeminiClient) convertMessages(messages []llm.Message) ([]*genai.Content
 				})
 
 			case llm.BlockTypeImage:
-				if block.Source != nil && len(block.Source.Data) > 0 {
-					parts = append(parts, &genai.Part{
-						InlineData: &genai.Blob{
-							MIMEType: block.Source.MediaType,
-							Data:     block.Source.Data,
-						},
-					})
+				if block.Source != nil {
+					data := block.Source.Data
+					if len(data) == 0 && block.Source.Path != "" {
+						// Load from disk if inline data is missing
+						var err error
+						data, err = os.ReadFile(block.Source.Path)
+						if err != nil {
+							slog.Error("Failed to read image from path", "path", block.Source.Path, "error", err)
+							continue
+						}
+					}
+
+					if len(data) > 0 {
+						parts = append(parts, &genai.Part{
+							InlineData: &genai.Blob{
+								MIMEType: block.Source.MediaType,
+								Data:     data,
+							},
+						})
+					}
 				}
 			}
 		}

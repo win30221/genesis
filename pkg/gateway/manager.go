@@ -2,6 +2,8 @@ package gateway
 
 import (
 	"fmt"
+	"genesis/pkg/api"
+	"genesis/pkg/config"
 	"genesis/pkg/llm"
 	"genesis/pkg/monitor"
 	"log/slog"
@@ -10,42 +12,33 @@ import (
 	"time"
 )
 
-// MessageHandler is a callback function type that defines the processing
-// signature for standardized messages arriving from the Gateway.
-// It is typically implemented by the core processing unit (e.g., ChatHandler).
-type MessageHandler func(msg *UnifiedMessage)
-
 // GatewayManager is the central orchestration hub that manages multiple
 // communication channels and unifies message routing for both input and output.
-// It implements the ChannelContext interface to receive callbacks from channels.
+// It implements the api.ChannelContext interface to receive callbacks from channels.
 type GatewayManager struct {
-	channels      map[string]Channel // Registry of active channel instances indexed by ID
-	msgHandler    MessageHandler     // Callback for business logic processing
-	monitor       monitor.Monitor    // Interface for broadcasting message logs to monitoring tools
-	channelBuffer int                // Buffer size for internal Go channels during streaming
-	mu            sync.RWMutex       // Mutex protecting the concurrent access to the channels map
+	channels   map[string]api.Channel // Registry of active channel instances indexed by ID
+	msgHandler api.MessageHandler     // Callback for business logic processing
+	monitor    monitor.Monitor        // Interface for broadcasting message logs to monitoring tools
+	sysCfg     *config.SystemConfig   // Technical parameters for the gateway engine
+	mu         sync.RWMutex           // Mutex protecting the concurrent access to the channels map
 }
 
-// NewGatewayManager initializes a new GatewayManager instance with default
-// parameters like a standard internal channel buffer size.
+// NewGatewayManager initializes a new GatewayManager instance.
 func NewGatewayManager() *GatewayManager {
 	return &GatewayManager{
-		channels:      make(map[string]Channel),
-		channelBuffer: 100, // Default buffer size for stream wrapping
+		channels: make(map[string]api.Channel),
 	}
 }
 
-// SetChannelBuffer configures the size of internal Go channels used in
-// StreamReply to prevent blocking during chunk processing.
-func (g *GatewayManager) SetChannelBuffer(size int) {
-	if size > 0 {
-		g.channelBuffer = size
-	}
+// WithSystemConfig injects engine-level technical parameters into the manager.
+func (g *GatewayManager) WithSystemConfig(cfg *config.SystemConfig) *GatewayManager {
+	g.sysCfg = cfg
+	return g
 }
 
 // SetMessageHandler injects the core logic callback that will be invoked
 // whenever a standardized message is received from any registered channel.
-func (g *GatewayManager) SetMessageHandler(handler MessageHandler) {
+func (g *GatewayManager) SetMessageHandler(handler api.MessageHandler) {
 	g.msgHandler = handler
 }
 
@@ -55,16 +48,16 @@ func (g *GatewayManager) SetMonitor(m monitor.Monitor) {
 	g.monitor = m
 }
 
-// Register adds a new communication Channel instance to the manager's registry.
-func (g *GatewayManager) Register(c Channel) {
+// Register adds a new communication api.Channel instance to the manager's registry.
+func (g *GatewayManager) Register(c api.Channel) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.channels[c.ID()] = c
 }
 
-// GetChannel retrieves a specifically registered Channel instance by its ID.
+// GetChannel retrieves a specifically registered api.Channel instance by its ID.
 // This is commonly used for high-level routing or proactive messaging.
-func (g *GatewayManager) GetChannel(id string) (Channel, bool) {
+func (g *GatewayManager) GetChannel(id string) (api.Channel, bool) {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
 	c, ok := g.channels[id]
@@ -73,14 +66,12 @@ func (g *GatewayManager) GetChannel(id string) (Channel, bool) {
 
 // StartAll iterates through all registered channels and invokes their
 // Start() method, passing the manager itself as the ChannelContext.
-// Returns the first error encountered during the batch startup process.
 func (g *GatewayManager) StartAll() error {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
 
 	for id, c := range g.channels {
 		slog.Info("Starting channel", "id", id)
-		// Inject self as the context for receiving messages from the channel
 		if err := c.Start(g); err != nil {
 			return fmt.Errorf("failed to start channel %s: %w", id, err)
 		}
@@ -139,7 +130,11 @@ func (g *GatewayManager) StreamReply(session SessionContext, blocks <-chan llm.C
 	}
 
 	// Create a wrapper channel to calculate full content while streaming
-	wrappedBlocks := make(chan llm.ContentBlock, g.channelBuffer)
+	var buffer int = 100
+	if g.sysCfg != nil {
+		buffer = g.sysCfg.InternalChannelBuffer
+	}
+	wrappedBlocks := make(chan llm.ContentBlock, buffer)
 	var sb strings.Builder
 
 	go func() {

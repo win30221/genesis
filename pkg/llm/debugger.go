@@ -3,6 +3,7 @@ package llm
 import (
 	"context"
 	"fmt"
+	"genesis/pkg/config"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -19,9 +20,10 @@ type StreamDebugger struct {
 }
 
 // NewStreamDebugger creates a new debugger instance.
+// It reads the debug setting from the provided system configuration.
 // It prepares the path information but does NOT open the file yet (lazy init).
-func NewStreamDebugger(ctx context.Context, provider string, enabled bool) *StreamDebugger {
-	if !enabled {
+func NewStreamDebugger(ctx context.Context, provider string, cfg *config.SystemConfig) *StreamDebugger {
+	if cfg == nil || !cfg.DebugChunks {
 		return &StreamDebugger{enabled: false}
 	}
 

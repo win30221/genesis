@@ -2,9 +2,9 @@ package web
 
 import (
 	"fmt"
+	"genesis/pkg/api"
 	"genesis/pkg/channels"
 	"genesis/pkg/config"
-	"genesis/pkg/gateway"
 	"genesis/pkg/llm"
 
 	jsoniter "github.com/json-iterator/go"
@@ -15,9 +15,8 @@ import (
 type WebFactory struct{}
 
 // Create parses the web-specific configuration and initializes a
-// WebChannel instance. The gateway import is retained only for the
-// return type (gateway.Channel interface).
-func (f *WebFactory) Create(rawConfig jsoniter.RawMessage, history *llm.ChatHistory, system *config.SystemConfig) (gateway.Channel, error) {
+// WebChannel instance.
+func (f *WebFactory) Create(rawConfig jsoniter.RawMessage, sessions *llm.SessionManager, system *config.SystemConfig) (api.Channel, error) {
 	var pCfg WebConfig
 	// Set default port
 	pCfg.Port = 9453
@@ -26,7 +25,7 @@ func (f *WebFactory) Create(rawConfig jsoniter.RawMessage, history *llm.ChatHist
 		return nil, fmt.Errorf("failed to parse web config: %w", err)
 	}
 
-	return NewWebChannel(pCfg, history), nil
+	return NewWebChannel(pCfg, sessions), nil
 }
 
 func init() {

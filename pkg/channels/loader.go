@@ -1,8 +1,8 @@
 package channels
 
 import (
+	"genesis/pkg/api"
 	"genesis/pkg/config"
-	"genesis/pkg/gateway"
 	"genesis/pkg/llm"
 	"log/slog"
 
@@ -11,30 +11,45 @@ import (
 
 var json = jsoniter.ConfigCompatibleWithStandardLibrary
 
-// LoadFromConfig acts as the central orchestration point for dynamic
-// channel initialization. It iterates through the provided configuration
-// map, resolves factories, and registers the resulting channels with
-// the GatewayManager.
-func LoadFromConfig(gw *gateway.GatewayManager, configs map[string]jsoniter.RawMessage, history *llm.ChatHistory, system *config.SystemConfig) {
-	for name, rawConfig := range configs {
+// Source encapsulates the configuration and dependencies required
+// to dynamically create communication channels from configuration.
+type Source struct {
+	configs  map[string]jsoniter.RawMessage
+	sessions *llm.SessionManager
+	system   *config.SystemConfig
+}
+
+// NewSource creates a new Source instance.
+func NewSource(configs map[string]jsoniter.RawMessage, sessions *llm.SessionManager, system *config.SystemConfig) *Source {
+	return &Source{
+		configs:  configs,
+		sessions: sessions,
+		system:   system,
+	}
+}
+
+// Load creates channel instances from configuration and returns them.
+func (s *Source) Load() []api.Channel {
+	var result []api.Channel
+	for name, rawConfig := range s.configs {
 		factory, ok := GetChannelFactory(name)
 		if !ok {
 			slog.Warn("Unknown channel type", "name", name)
 			continue
 		}
 
-		channel, err := factory.Create(rawConfig, history, system)
+		channel, err := factory.Create(rawConfig, s.sessions, s.system)
 		if err != nil {
 			slog.Error("Failed to create channel", "name", name, "error", err)
 			continue
 		}
 
-		// If Create returns nil (e.g., certain conditions not met but not an error), skip
 		if channel == nil {
 			continue
 		}
 
-		gw.Register(channel)
-		slog.Info("Channel registered", "name", name)
+		result = append(result, channel)
+		slog.Info("Channel created", "name", name)
 	}
+	return result
 }

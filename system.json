@@ -1,7 +1,7 @@
 {
     "max_retries": 3,
     "retry_delay_ms": 500,
-    "llm_timeout_min": 60,
+    "llm_timeout_ms": 600000,
     "ollama_default_url": "http://localhost:11434/v1",
     "internal_channel_buffer": 100,
     "thinking_init_delay_ms": 500,
@@ -9,5 +9,9 @@
     "show_thinking": true,
     "debug_chunks": true,
     "log_level": "debug",
-    "enable_tools": true
+    "enable_tools": true,
+    "history_summarize_threshold": 10,
+    "history_keep_recent_count": 5,
+    "history_max_chars": 10000,
+    "history_max_tokens": 4000
 }

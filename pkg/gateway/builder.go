@@ -2,19 +2,23 @@ package gateway
 
 import (
 	"fmt"
+	"genesis/pkg/api"
 	"genesis/pkg/config"
 	"genesis/pkg/monitor"
 )
 
 // GatewayBuilder provides a fluent builder pattern interface for constructing
-// and initializing a GatewayManager with all its necessary dependencies like
-// monitors, configurations, and handler factories.
+// and initializing a GatewayManager with all its necessary dependencies.
+//
+// All components (channels, handler, engine, tools) are pre-built and injected
+// as instances — the Builder simply assembles and starts them.
 type GatewayBuilder struct {
-	gw             *GatewayManager                      // The GatewayManager instance being constructed
-	monitor        monitor.Monitor                      // Monitoring implementation to be injected
-	systemConfig   *config.SystemConfig                 // Technical parameters for the gateway
-	channelLoader  func(*GatewayManager)                // Function responsible for loading and registering channels
-	handlerFactory func(*GatewayManager) MessageHandler // Factory function to create the core message handler
+	gw             *GatewayManager                                 // The GatewayManager instance being constructed
+	monitor        monitor.Monitor                                 // Monitoring implementation to be injected
+	systemConfig   *config.SystemConfig                            // Technical parameters for the gateway
+	handlerBuilder func(api.MessageResponder) api.MessageProcessor // Unified strategy to construct and wire the message handler
+	channels       []api.Channel                                   // Pre-built channel instances to register
+	agentEngine    api.AgentEngine                                 // Agent Engine (using strong type from api)
 }
 
 // NewGatewayBuilder creates a fresh GatewayBuilder instance and allocates
@@ -39,29 +43,37 @@ func (b *GatewayBuilder) WithSystemConfig(cfg *config.SystemConfig) *GatewayBuil
 	return b
 }
 
-// WithChannelLoader injects a loader function that knows how to instantiate
-// and register specific Channel implementations. The loader captures all
-// required dependencies (configs, history, etc.) via closure.
-func (b *GatewayBuilder) WithChannelLoader(loader func(*GatewayManager)) *GatewayBuilder {
-	b.channelLoader = loader
+// WithChannel adds pre-built channel instances to the gateway.
+func (b *GatewayBuilder) WithChannel(channels ...api.Channel) *GatewayBuilder {
+	b.channels = append(b.channels, channels...)
 	return b
 }
 
-// WithHandlerFactory provides a factory function that creates the core
-// MessageHandler (tipically ChatHandler.OnMessage) by passing the fully
-// configured GatewayManager reference.
-func (b *GatewayBuilder) WithHandlerFactory(factory func(*GatewayManager) MessageHandler) *GatewayBuilder {
-	b.handlerFactory = factory
+// WithAgentEngine injects an agent engine into the gateway.
+func (b *GatewayBuilder) WithAgentEngine(engine api.AgentEngine) *GatewayBuilder {
+	b.agentEngine = engine
+	return b
+}
+
+// WithHandler injects a message handler instance into the gateway.
+// If the handler implements api.ResponderAware, it will be automatically initialized.
+func (b *GatewayBuilder) WithHandler(h api.MessageProcessor) *GatewayBuilder {
+	b.handlerBuilder = func(responder api.MessageResponder) api.MessageProcessor {
+		if setter, ok := h.(api.ResponderAware); ok {
+			setter.SetResponder(responder)
+		}
+		return h
+	}
 	return b
 }
 
 // Build finalizes the configuration, injects all dependencies into the
-// GatewayManager, starts the monitor and all registered channels.
+// GatewayManager, registers all channels, and starts everything.
 // Returns the fully operational GatewayManager or an error if any stage fails.
 func (b *GatewayBuilder) Build() (*GatewayManager, error) {
-	// 0. Extract and apply system-level parameters (like buffer sizes)
+	// 0. Extract and apply system-level parameters
 	if b.systemConfig != nil {
-		b.gw.SetChannelBuffer(b.systemConfig.InternalChannelBuffer)
+		b.gw.WithSystemConfig(b.systemConfig)
 	}
 
 	// 1. Initialize and start the monitoring service
@@ -72,18 +84,25 @@ func (b *GatewayBuilder) Build() (*GatewayManager, error) {
 		}
 	}
 
-	// 2. Load and register communication channels using the provided loader
-	if b.channelLoader != nil {
-		b.channelLoader(b.gw)
+	// 2. Register all pre-built channels
+	for _, c := range b.channels {
+		b.gw.Register(c)
 	}
 
-	// 3. Instantiate and bind the core message handler
-	if b.handlerFactory != nil {
-		handler := b.handlerFactory(b.gw)
-		b.gw.SetMessageHandler(handler)
+	// 3. Establish the core message handler using the registered strategy
+	if b.handlerBuilder != nil {
+		handler := b.handlerBuilder(b.gw)
+		if handler != nil {
+			b.gw.SetMessageHandler(handler.OnMessage)
+		}
 	}
 
-	// 4. Trigger the startup sequence for all successfully registered channels
+	// 4. Inject responder into engine if provided
+	if b.agentEngine != nil {
+		b.agentEngine.SetResponder(b.gw)
+	}
+
+	// 5. Start all registered channels
 	if err := b.gw.StartAll(); err != nil {
 		return nil, fmt.Errorf("failed to start channels: %w", err)
 	}

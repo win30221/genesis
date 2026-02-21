@@ -21,7 +21,7 @@ func (f *GeminiFactory) Create(cfg llm.ProviderGroupConfig, sys *config.SystemCo
 	// Cartesian Product: Models x Keys (prioritize models)
 	for _, model := range cfg.Models {
 		for _, key := range cfg.APIKeys {
-			client := NewGeminiClient(key, model, useThought, cfg.Options)
+			client := NewGeminiClient(key, model, useThought, cfg.Options, sys)
 			clients = append(clients, client)
 		}
 	}

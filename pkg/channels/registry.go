@@ -1,8 +1,8 @@
 package channels
 
 import (
+	"genesis/pkg/api"
 	"genesis/pkg/config"
-	"genesis/pkg/gateway"
 	"genesis/pkg/llm"
 
 	jsoniter "github.com/json-iterator/go"
@@ -14,7 +14,7 @@ import (
 type ChannelFactory interface {
 	// Create instantiates a concrete Channel implementation using the
 	// provided configuration and shared system resources.
-	Create(rawConfig jsoniter.RawMessage, history *llm.ChatHistory, system *config.SystemConfig) (gateway.Channel, error)
+	Create(rawConfig jsoniter.RawMessage, sessions *llm.SessionManager, system *config.SystemConfig) (api.Channel, error)
 }
 
 // channelRegistry is an internal global map stores the mapping between

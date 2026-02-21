@@ -2,599 +2,75 @@ package handler
 
 import (
 	"context"
-	"crypto/rand"
 	"fmt"
-	"genesis/pkg/config"
-	"genesis/pkg/gateway"
+	"genesis/pkg/api"
 	"genesis/pkg/llm"
-	"genesis/pkg/tools"    // Added
-	"genesis/pkg/tools/os" // Added
+	"genesis/pkg/utils"
 	"log/slog"
-	"strings"
 	"time"
-
-	jsoniter "github.com/json-iterator/go" // Added
 )
-
-var json = jsoniter.ConfigCompatibleWithStandardLibrary
 
 // ChatHandler orchestrates the conversation flow, maintaining state, session history,
 // and coordinating between the Gateway, LLM clients, and Tool registry.
-// It implements the core "Agentic Loop" where the AI can think, respond, and act.
 type ChatHandler struct {
-	client       llm.LLMClient           // The LLM provider client (Gemini, Ollama, etc.)
-	gw           *gateway.GatewayManager // Manager for sending replies back to communication channels
-	history      *llm.ChatHistory        // In-memory buffer for the conversation's message history
-	config       *config.Config          // Business-level application configuration
-	systemConfig *config.SystemConfig    // Technical/engine-level configuration parameters
-	toolRegistry *tools.ToolRegistry     // Registry containing all available tools for agentic actions
+	responder api.MessageResponder // Segregated interface for sending replies
+	sessions  *llm.SessionManager  // Manager for isolated session histories
+	engine    api.AgentEngine      // Reasoning engine (using api interface)
+}
+
+// NewChatHandler initializes a ChatHandler instance.
+// Note: responder can be nil if set later via SetResponder.
+func NewChatHandler(
+	engine api.AgentEngine,
+	sessions *llm.SessionManager,
+) *ChatHandler {
+	return &ChatHandler{
+		sessions: sessions,
+		engine:   engine,
+	}
 }
 
 // NewMessageHandler initializes a ChatHandler instance and returns a closure
-// compatible with the gateway.MessageHandler type.
-// It sets up the necessary tool controllers, registers core tools, and
-// ensures the handler is ready to process incoming unified messages.
-// Parameters:
-//   - client: The LLM client implementation to be used for reasoning.
-//   - gw: The gateway manager for routing replies.
-//   - cfg: App-level configuration (keys, prompt).
-//   - sysCfg: Engine-level configuration (timeouts, retries).
-//   - history: The chat history manager for maintaining context.
-//
-// Returns:
-//   - A MessageHandler function that can be registered with the Gateway.
-func NewMessageHandler(client llm.LLMClient, gw *gateway.GatewayManager, cfg *config.Config, sysCfg *config.SystemConfig, history *llm.ChatHistory) func(*gateway.UnifiedMessage) {
-	tr := tools.NewToolRegistry()
-	// Register tools here
-	tr.Register(tools.NewOSTool(os.NewOSWorker()))
-
-	h := &ChatHandler{
-		client:       client,
-		gw:           gw,
-		history:      history,
-		config:       cfg,
-		systemConfig: sysCfg,
-		toolRegistry: tr,
-	}
-
-	h.initializeHistory()
-
-	// Sync debug switch based on config
-	client.SetDebug(sysCfg.DebugChunks)
-
+// compatible with the api.MessageHandler type (aliased in gateway).
+func NewMessageHandler(
+	responder api.MessageResponder,
+	engine api.AgentEngine,
+	sessions *llm.SessionManager,
+) api.MessageHandler {
+	h := NewChatHandler(engine, sessions)
+	h.SetResponder(responder)
 	return h.OnMessage
 }
 
-// initializeHistory ensures that the initial system prompt is present
-// in the ChatHistory as the very first message if history is empty.
-func (h *ChatHandler) initializeHistory() {
-	if len(h.history.GetMessages()) == 0 && h.config.SystemPrompt != "" {
-		h.history.Add(llm.NewSystemMessage(h.config.SystemPrompt))
-	}
+// SetResponder sets the messaging interface used by the handler to send replies.
+func (h *ChatHandler) SetResponder(responder api.MessageResponder) {
+	h.responder = responder
 }
 
 // OnMessage is the primary entry point for processing incoming user messages.
-// It performs the following orchestration steps:
-// 1. Assigns a unique DebugID for log grouping if not already present.
-// 2. Intercepts and executes Slash Commands (test/debug tools).
-// 3. Normalizes platform-specific attachments (images, etc.) into LLM ContentBlocks.
-// 4. Appends the new user perspective to the ChatHistory.
-// 5. Triggers the recursive processLLMStream loop for AI reasoning and action.
-// 6. Persists the final AI assistant response to the conversation history.
-func (h *ChatHandler) OnMessage(msg *gateway.UnifiedMessage) {
-	if msg.DebugID == "" {
-		b := make([]byte, 2)
-		rand.Read(b)
-		msg.DebugID = fmt.Sprintf("%x", b)
-	}
-
-	// Create base context with DebugID
-	ctx := context.WithValue(context.Background(), llm.DebugDirContextKey, msg.DebugID)
-	start := time.Now()
-
-	// Add a visual separator for new messages in CLI
-	fmt.Println()
-	slog.InfoContext(ctx, "Message received", "channel", msg.Session.ChannelID, "user", msg.Session.Username, "content", msg.Content, "files", len(msg.Files))
-
-	// --- Slash Commands ---
-	// Test commands should not be added to history, handle and return directly
-	if strings.HasPrefix(msg.Content, "/") {
-		h.handleSlashCommand(msg)
-		return
-	}
-
-	// 1. Create user message (multi-modal support)
-	userMsg := llm.Message{
-		Role:    "user",
-		Content: []llm.ContentBlock{},
-	}
-
-	// Add text content
-	if msg.Content != "" {
-		userMsg.Content = append(userMsg.Content, llm.NewTextBlock(msg.Content))
-	}
-
-	// Add image attachments
-	for _, file := range msg.Files {
-		userMsg.Content = append(userMsg.Content, llm.NewImageBlock(file.Data, file.MimeType))
-		slog.InfoContext(ctx, "Attached file", "name", file.Filename, "mime", file.MimeType, "bytes", len(file.Data))
-	}
-
-	// Store user message
-	h.history.Add(userMsg)
-
-	// 2. Call LLM and handle stream
-	assistantMsg := h.processLLMStream(ctx, msg)
-
-	// 3. Record AI response
-	if len(assistantMsg.Content) > 0 {
-		h.history.Add(assistantMsg)
-	}
-
-	slog.InfoContext(ctx, "Agent loop finished", "duration", time.Since(start).String())
-}
-
-// processLLMStream manages the core Agentic reasoning loop including streaming
-// response forwarding, tool execution recursion, and error recovery.
-//
-// Internal Workflow:
-//
-//	A. Sets up a context with a hard timeout derived from SystemConfig.LLMTimeoutMs.
-//	B. Performs a streaming chat call to the LLM client.
-//	C. Uses collectChunks to aggregate tokens while concurrently pushing text blocks back to the Gateway.
-//	D. If tool calls are detected in the LLM response:
-//	   - Checks security/system constraints (e.g., EnableTools).
-//	   - Executes tools via the Registry and appends results to history.
-//	   - Recursively calls processLLMStream to let the AI process the tool outcomes.
-//	E. Handles "length limit" triggers by automatically requesting content continuation.
-//	F. Performs transparent retries on transient connection or streaming errors.
-//
-// Parameters:
-//   - msg: The original unified message containing session context for reply routing.
-//
-// Returns:
-//   - The final aggregated llm.Message representing the AI's complete response/state.
-func (h *ChatHandler) processLLMStream(ctx context.Context, msg *gateway.UnifiedMessage) llm.Message {
-	timeout := time.Duration(h.systemConfig.LLMTimeoutMs) * time.Millisecond
-	ctx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-
-	// Select the correct tool format
-	var availableTools any
-	if h.systemConfig.EnableTools && !msg.NoTools {
-		pName := h.client.Provider()
-		switch pName {
-		case "gemini":
-			availableTools = h.toolRegistry.ToGeminiFormat()
-		case "openai", "ollama":
-			availableTools = h.toolRegistry.ToOpenaiFormat()
-		default:
-			slog.WarnContext(ctx, "Unknown provider format", "provider", pName)
-		}
-	}
-
-	chunkCh, err := h.client.StreamChat(ctx, h.history.GetMessages(), availableTools)
-
-	if err != nil {
-		slog.ErrorContext(ctx, "LLM stream init failed", "error", err)
-		h.gw.SendReply(msg.Session, fmt.Sprintf("❌ Error: %v", err))
-		return llm.Message{}
-	}
-
-	// Prepare the stream channel for system forwarding
-	blockCh := make(chan llm.ContentBlock, 100)
-	streamDone := make(chan struct{})
+func (h *ChatHandler) OnMessage(msg *api.UnifiedMessage) {
 	go func() {
-		defer close(streamDone)
-		if err := h.gw.StreamReply(msg.Session, blockCh); err != nil {
-			slog.ErrorContext(ctx, "Failed to stream reply", "error", err)
-		}
-	}()
-
-	// Encapsulate closing logic to ensure manual closing and waiting before recursion
-	closed := false
-	safeClose := func() {
-		if !closed {
-			close(blockCh)
-			<-streamDone
-			closed = true
-		}
-	}
-	defer safeClose()
-
-	// Handle chunks
-	assistantMsg, streamErr := h.collectChunks(ctx, msg.Session, chunkCh, blockCh)
-
-	// 1. End of LLM turn, close current stream block in time (e.g., block containing thinking process)
-	safeClose()
-
-	// --- Tool Execution Logic ---
-	if len(assistantMsg.ToolCalls) > 0 {
-		// Store assistant's ToolCall message
-		h.history.Add(assistantMsg)
-
-		for _, tc := range assistantMsg.ToolCalls {
-			h.resolveAndCommitToolCall(ctx, tc, msg)
+		if msg.DebugID == "" {
+			msg.DebugID = utils.GenerateID()
 		}
 
-		// safeClose already called before recursion
-		return h.processLLMStream(ctx, msg)
-	}
-
-	// 3. Anomaly detection and automatic retry
-	reason := "UNKNOWN"
-	if assistantMsg.Usage != nil {
-		reason = assistantMsg.Usage.StopReason
-	}
-
-	hasContent, hasThinking, preview := summarizeContent(assistantMsg)
-
-	// A response is normal if:
-	// 1. No stream error occurred.
-	// 2. We actually got some content or thinking process.
-	// 3. It stopped normally (stop) or reason is unknown.
-	// Note: StopReasonLength is NOT normal — it should trigger continuation logic.
-	isNormal := streamErr == nil && (hasContent || hasThinking) && (reason == llm.StopReasonStop || reason == "UNKNOWN")
-
-	if !isNormal {
-		// 3.1 Handle continuation logic (StopReason == "length")
-		// User requested to REMOVE automatic continuation.
-		// If truncated, we just return what we have and let the user decide.
-		if reason == llm.StopReasonLength {
-			slog.InfoContext(ctx, "Response truncated by length limit", "thinking", hasThinking, "content", hasContent)
-			h.gw.SendReply(msg.Session, "⚠️ Response truncated due to length limit.")
-			return assistantMsg
-		}
-
-		// 3.2 Handle general retry logic
-		if retried := h.attemptRetry(ctx, msg, reason, streamErr, preview); retried {
-			safeClose()
-			return h.processLLMStream(ctx, msg)
-		}
-	}
-
-	return assistantMsg
-}
-
-// collectChunks is an auxiliary method dedicated to consuming a StreamChunk channel.
-// It performs real-time state management by detecting changes between "thinking"
-// and "content" phases and triggers appropriate UI signals via the Gateway.
-// It also accumulates the raw tokens into a final llm.Message object.
-// Parameters:
-//   - session: Target session for sending thinking/UI signals.
-//   - chunkCh: Inbound channel providing stream fragments from the LLM client.
-//   - blockCh: Outbound channel for forwarding processed ContentBlocks to the Gateway.
-//
-// Returns:
-//   - The fully aggregated message and any error encountered during consumption.
-func (h *ChatHandler) collectChunks(ctx context.Context, session gateway.SessionContext, chunkCh <-chan llm.StreamChunk, blockCh chan<- llm.ContentBlock) (llm.Message, error) {
-	msg := llm.Message{
-		Role:    "assistant",
-		Content: []llm.ContentBlock{},
-	}
-	var lastError error
-
-	// Setup "thinking" timer
-	delay := time.Duration(h.systemConfig.ThinkingInitDelayMs) * time.Millisecond
-	thinkingTimer := time.NewTimer(delay)
-	defer thinkingTimer.Stop()
-	timerChan := thinkingTimer.C
-
-	for {
-		select {
-		case chunk, ok := <-chunkCh:
-			if !ok {
-				return msg, lastError
-			}
-			if chunk.RawError != nil {
-				return msg, chunk.RawError
-			}
-
-			// Stop the "thinking" timer if it hasn't fired yet
-			if thinkingTimer != nil {
-				thinkingTimer.Stop()
-				thinkingTimer = nil
-				timerChan = nil
-			}
-
-			h.processChunk(ctx, chunk, &msg, blockCh)
-
-			if chunk.IsFinal {
-				return msg, lastError
-			}
-
-		case <-timerChan:
-			h.gw.SendSignal(session, "thinking")
-			timerChan = nil // Send only once
-		}
-	}
-}
-
-// handleToolCall encapsulates the logic for resolving, parsing, and executing
-// an individual tool call. It uses guard clauses to keep the logic flat.
-func (h *ChatHandler) handleToolCall(ctx context.Context, tc llm.ToolCall) []llm.ContentBlock {
-	// 1. Get tool from registry
-	// Normalize tool name: Some models might prepend "functions." to the tool name
-	// based on specific internal training or legacy patterns.
-	// We strip it to ensure compatibility with our internal registry.
-	cleanName := strings.TrimPrefix(tc.Name, "functions.")
-
-	tool, ok := h.toolRegistry.Get(cleanName)
-	if !ok {
-		slog.ErrorContext(ctx, "Unknown tool call", "name", tc.Name, "clean_name", cleanName)
-		return []llm.ContentBlock{llm.NewTextBlock(fmt.Sprintf("Error: Unknown tool '%s'", tc.Name))}
-	}
-
-	// 2. Parse arguments
-	var args map[string]any
-	if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
-		slog.ErrorContext(ctx, "Failed to parse tool args", "error", err)
-		return []llm.ContentBlock{llm.NewTextBlock(fmt.Sprintf("Error: Failed to parse tool arguments: %v", err))}
-	}
-
-	// 3. Execute tool
-	slog.InfoContext(ctx, "Executing tool", "name", tc.Name, "args", args)
-	res, err := tool.Execute(ctx, args)
-	if err != nil {
-		slog.ErrorContext(ctx, "Tool execution error", "name", tc.Name, "error", err)
-		return []llm.ContentBlock{llm.NewTextBlock(fmt.Sprintf("Error: Tool execution failed: %v", err))}
-	}
-
-	// 4. Convert standardized result blocks
-	return convertToolResult(res)
-}
-
-// resolveAndCommitToolCall is a resilience wrapper that ensures Every tool call
-// results in a tool message being added to the history, even if the tool panics.
-func (h *ChatHandler) resolveAndCommitToolCall(ctx context.Context, tc llm.ToolCall, msg *gateway.UnifiedMessage) {
-	var resultBlocks []llm.ContentBlock
-
-	defer func() {
-		if r := recover(); r != nil {
-			slog.ErrorContext(ctx, "Tool execution panicked", "tool", tc.Name, "error", r)
-			resultBlocks = []llm.ContentBlock{llm.NewTextBlock("Error: Internal processing panic")}
-		}
-
-		// 1. MUST add tool result to history to avoid OpenAI 400 error
-		toolResMsg := llm.Message{
-			Role:       "tool",
-			ToolCallID: tc.ID,
-			ToolName:   tc.Name, // Added to support Gemini Tool Response
-			Content:    resultBlocks,
-		}
-		h.history.Add(toolResMsg)
-
-		// 2. Use independent stream to send tool results to frontend (Role: tool/system)
-		h.gw.SendSignal(msg.Session, "role:system")
-		h.streamBlocks(ctx, msg.Session, resultBlocks)
-	}()
-
-	resultBlocks = h.handleToolCall(ctx, tc)
-}
-
-// streamBlocks is a utility to pipe a slice of content blocks into the gateway's stream.
-func (h *ChatHandler) streamBlocks(ctx context.Context, session gateway.SessionContext, blocks []llm.ContentBlock) {
-	if len(blocks) == 0 {
-		return
-	}
-	resCh := make(chan llm.ContentBlock, len(blocks))
-	for _, b := range blocks {
-		resCh <- b
-	}
-	close(resCh)
-	if err := h.gw.StreamReply(session, resCh); err != nil {
-		slog.ErrorContext(ctx, "Failed to stream blocks", "error", err)
-	}
-}
-
-// processChunk handles the low-level parsing of a single LLM StreamChunk.
-// It extracts text, reasoning tokens (thinking), and error messages, appending them
-// to the provided accumulation buffers. It also emits UI blocks if the chunk
-// contains valid user-facing content.
-func (h *ChatHandler) processChunk(ctx context.Context, chunk llm.StreamChunk, msg *llm.Message, blockCh chan<- llm.ContentBlock) {
-	// 1. Handle error chunk
-	if chunk.Error != "" {
-		errorMsg := fmt.Sprintf("\n❌ %s", chunk.Error)
-		msg.AddContentBlock(llm.NewErrorBlock(errorMsg))
-		blockCh <- llm.NewErrorBlock(errorMsg)
-	}
-
-	// 2. Accumulate and push content blocks
-	for _, block := range chunk.ContentBlocks {
-		msg.AddContentBlock(block)
-
-		switch block.Type {
-		case llm.BlockTypeText:
-			blockCh <- block
-		case llm.BlockTypeThinking:
-			if h.systemConfig.ShowThinking {
-				blockCh <- block
-			}
-		case llm.BlockTypeImage:
-			blockCh <- block
-		}
-	}
-
-	// 3. Accumulate ToolCalls
-	if len(chunk.ToolCalls) > 0 {
-		msg.ToolCalls = append(msg.ToolCalls, chunk.ToolCalls...)
-	}
-
-	// 4. Update Usage
-	if chunk.Usage != nil {
-		msg.Usage = chunk.Usage
-	}
-}
-
-// handleSlashCommand parses and executes manual "slash" commands entered by the user.
-// These commands are typically used for direct tool debugging or administrative tasks.
-// Format: /tool_name action {"param": "value"}
-func (h *ChatHandler) handleSlashCommand(msg *gateway.UnifiedMessage) {
-	parts := strings.SplitN(strings.TrimPrefix(msg.Content, "/"), " ", 3)
-	if len(parts) < 2 {
-		h.gw.SendReply(msg.Session, "❌ Format error. Please use: /[tool_name] [action] [JSON_params(optional)]\nExample: `/os list_desktop` or `/os run_command {\"command\":\"dir\"}`")
-		return
-	}
-
-	toolName := parts[0]
-	action := parts[1]
-
-	// Handle /notools virtual command (normal conversation without tools)
-	if toolName == "notools" {
-		msg.NoTools = true
-		msg.Content = action
-		if len(parts) > 2 {
-			msg.Content += " " + parts[2]
-		}
-		// Manual command entry also needs context (derived from OnMessage ID)
 		ctx := context.WithValue(context.Background(), llm.DebugDirContextKey, msg.DebugID)
-		assistantMsg := h.processLLMStream(ctx, msg)
-		h.history.Add(assistantMsg)
-		return
-	}
+		start := time.Now()
 
-	var params map[string]any
-	if len(parts) > 2 {
-		if err := json.Unmarshal([]byte(parts[2]), &params); err != nil {
-			// If not JSON, try treating it as a single string parameter (optimization for run_command)
-			if (toolName == "os" || toolName == "os_control") && action == "run_command" {
-				params = map[string]any{"command": parts[2]}
-			} else {
-				h.gw.SendReply(msg.Session, fmt.Sprintf("❌ Parameter parsing failed: %v", err))
-				return
-			}
-		}
-	} else {
-		params = make(map[string]any)
-	}
+		fmt.Println()
+		slog.InfoContext(ctx, "Message received", "channel", msg.Session.ChannelID, "user", msg.Session.Username, "content", msg.Content, "files", len(msg.Files))
 
-	// Create parameter structure expected by OSTool
-	args := map[string]any{
-		"action": action,
-		"params": params,
-	}
-
-	tool, ok := h.toolRegistry.Get(toolName)
-	if !ok {
-		// Attempt fuzzy matching (e.g., os_control)
-		tool, ok = h.toolRegistry.Get(toolName + "_control")
-		if !ok {
-			h.gw.SendReply(msg.Session, fmt.Sprintf("❌ Tool not found: %s", toolName))
+		sessionID := fmt.Sprintf("%s_%s", msg.Session.ChannelID, msg.Session.ChatID)
+		history, err := h.sessions.GetHistory(sessionID)
+		if err != nil {
+			slog.ErrorContext(ctx, "Failed to resolve session history", "session", sessionID, "error", err)
+			h.responder.SendReply(msg.Session, "❌ Error loading history.")
 			return
 		}
-	}
 
-	h.gw.SendReply(msg.Session, fmt.Sprintf("🛠️ Manually executing tool: %s/%s...", toolName, action))
-	// Manual execution derived context
-	ctx := context.WithValue(context.Background(), llm.DebugDirContextKey, msg.DebugID)
-	res, err := tool.Execute(ctx, args)
-	if err != nil {
-		h.gw.SendReply(msg.Session, fmt.Sprintf("❌ Execution error: %v", err))
-		return
-	}
+		// Simply delegate the message, logic, slash commands and summarization to the AgentEngine
+		h.engine.HandleMessage(ctx, msg, history)
 
-	// Send results using unified streaming helper
-	h.streamBlocks(ctx, msg.Session, convertToolResult(res))
-}
-
-// attemptRetry checks if a retry is allowed and, if so, increments the counter
-// and sends a notification to the user. Returns true if the caller should proceed
-// with the retry (recursive call), false if max retries have been exhausted.
-//
-// Error classification is delegated entirely to each LLM Client's IsTransientError().
-// The handler does NOT parse error strings itself.
-func (h *ChatHandler) attemptRetry(ctx context.Context, msg *gateway.UnifiedMessage, reason string, streamErr error, preview string) bool {
-	// Delegate error classification to the LLM client
-	if streamErr != nil && !h.client.IsTransientError(streamErr) {
-		slog.ErrorContext(ctx, "Non-transient error, skipping retry", "error", streamErr)
-		h.gw.SendReply(msg.Session, fmt.Sprintf("❌ %v", streamErr))
-		return false
-	}
-
-	maxRetries := h.systemConfig.MaxRetries
-	if msg.RetryCount >= maxRetries {
-		slog.ErrorContext(ctx, "Max retries reached", "max", maxRetries, "reason", reason, "error", streamErr)
-		h.gw.SendReply(msg.Session, "❌ AI response remains abnormal, please try rephrasing or restarting the conversation.")
-		return false
-	}
-
-	msg.RetryCount++
-	slog.WarnContext(ctx, "Abnormal response, retrying",
-		"reason", reason,
-		"error", streamErr,
-		"preview", preview,
-		"has_content", preview != "",
-		"retry", fmt.Sprintf("%d/%d", msg.RetryCount, maxRetries),
-	)
-
-	retryNotice := fmt.Sprintf("⚠️ Abnormal response (%s), attempting automatic fix (%d/%d)...", reason, msg.RetryCount, maxRetries)
-	if streamErr != nil {
-		retryNotice = fmt.Sprintf("⚠️ Connection error (%v), attempting automatic recovery (%d/%d)...", streamErr, msg.RetryCount, maxRetries)
-	}
-	h.gw.SendReply(msg.Session, retryNotice)
-
-	time.Sleep(time.Duration(h.systemConfig.RetryDelayMs) * time.Millisecond)
-	return true
-}
-
-// summarizeContent performs a single pass over the message to derive:
-// 1. Whether it contains valid text content (hasContent).
-// 2. Whether it contains thinking process (hasThinking).
-// 3. A short preview string for logging (truncated to 100 chars).
-// This optimization avoids multiple traversals and full string allocations.
-func summarizeContent(msg llm.Message) (hasContent, hasThinking bool, preview string) {
-	var sb strings.Builder
-	// Pre-allocate buffer for preview to avoid small reallocations
-	sb.Grow(100)
-
-	for _, b := range msg.Content {
-		if b.Type == llm.BlockTypeThinking && len(b.Text) > 0 {
-			hasThinking = true
-		} else if b.Type == llm.BlockTypeText && len(b.Text) > 0 {
-			hasContent = true
-			// Append to preview if not full
-			if sb.Len() < 100 {
-				remaining := 100 - sb.Len()
-				if len(b.Text) > remaining {
-					sb.WriteString(b.Text[:remaining])
-				} else {
-					sb.WriteString(b.Text)
-				}
-			}
-		}
-	}
-
-	preview = sb.String()
-	if len(preview) >= 100 {
-		preview += "..."
-	}
-	return
-}
-
-// convertToolResult transforms a tools.ToolResult into a slice of llm.ContentBlock.
-// It handles both text and image content types and ensures non-empty output.
-func convertToolResult(res *tools.ToolResult) []llm.ContentBlock {
-	var blocks []llm.ContentBlock
-	for _, b := range res.Content {
-		if b.Type == llm.BlockTypeImage {
-			data, err := tools.Base64Decode(b.Data)
-			if err != nil {
-				slog.Error("Failed to decode image data", "error", err)
-				blocks = append(blocks, llm.NewTextBlock(fmt.Sprintf("Error: Failed to decode image: %v", err)))
-				continue
-			}
-			mimeType := b.MimeType
-			if mimeType == "" {
-				mimeType = "image/png"
-			}
-			blocks = append(blocks, llm.NewImageBlock(data, mimeType))
-		} else {
-			blocks = append(blocks, llm.NewTextBlock(b.Text))
-		}
-	}
-	// Safety net: ensure content is not empty to prevent LLM errors
-	if len(blocks) == 0 {
-		blocks = append(blocks, llm.NewTextBlock("(No output)"))
-	}
-	return blocks
+		slog.InfoContext(ctx, "Gateway logic finished", "duration", time.Since(start).String())
+	}()
 }

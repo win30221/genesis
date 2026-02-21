@@ -25,8 +25,8 @@ graph LR
     Handler --> LLM
     Handler --> Tools
     GW --> Monitor
-    Config -.-> Handler & GW & LLM
-```
+    Config -.-> Handler & GW	*   具備完整對話歷史追蹤機制
+	*   基於策略的高效摘要與截斷，確保不超過 Token 限制
 
 ---
 

@@ -63,15 +63,19 @@ func NewFromConfig(rawLLM jsoniter.RawMessage, system *config.SystemConfig) (LLM
 
 	slog.Info("LLM clients initialized", "count", len(allAtomicClients))
 
+	var finalClient LLMClient
+
 	// If only one, return it directly
 	if len(allAtomicClients) == 1 {
-		return allAtomicClients[0], nil
+		finalClient = allAtomicClients[0]
+	} else {
+		// Otherwise wrap in a FallbackClient with system-level retry settings
+		finalClient = &FallbackClient{
+			Clients:    allAtomicClients,
+			MaxRetries: system.MaxRetries,
+			RetryDelay: time.Duration(system.RetryDelayMs) * time.Millisecond,
+		}
 	}
 
-	// Otherwise wrap in a FallbackClient with system-level retry settings
-	return &FallbackClient{
-		Clients:    allAtomicClients,
-		MaxRetries: system.MaxRetries,
-		RetryDelay: time.Duration(system.RetryDelayMs) * time.Millisecond,
-	}, nil
+	return finalClient, nil
 }

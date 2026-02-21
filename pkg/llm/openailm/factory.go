@@ -22,7 +22,7 @@ func (f *OpenAIFactory) Create(cfg llm.ProviderGroupConfig, sys *config.SystemCo
 	for _, model := range cfg.Models {
 		baseURL := cfg.BaseURL
 
-		client, err := NewClient("openai", apiKey, model, baseURL, cfg.Options)
+		client, err := NewClient("openai", apiKey, model, baseURL, cfg.Options, sys)
 		if err != nil {
 			slog.Error("Failed to create OpenAI client", "model", model, "error", err)
 			continue

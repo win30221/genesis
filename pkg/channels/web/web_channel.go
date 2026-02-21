@@ -1,13 +1,16 @@
 package web
 
 import (
-	_ "embed"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"fmt"
-	"genesis/pkg/gateway"
+	"genesis/pkg/api"
 	"genesis/pkg/llm"
+	"genesis/pkg/utils"
 	"log/slog"
 	"net/http"
+	"os"
 	"sync"
 
 	"github.com/gorilla/websocket"
@@ -49,15 +52,15 @@ func (sc *SafeConn) WriteMessage(messageType int, data []byte) error {
 type WebChannel struct {
 	config      WebConfig
 	server      *http.Server
-	history     *llm.ChatHistory     // Shared history
+	sessions    *llm.SessionManager  // Manager for fetching histories
 	connections map[string]*SafeConn // Map UserID -> WS Connection
 	mu          sync.RWMutex
 }
 
-func NewWebChannel(cfg WebConfig, history *llm.ChatHistory) *WebChannel {
+func NewWebChannel(cfg WebConfig, sessions *llm.SessionManager) *WebChannel {
 	return &WebChannel{
 		config:      cfg,
-		history:     history,
+		sessions:    sessions,
 		connections: make(map[string]*SafeConn),
 	}
 }
@@ -66,7 +69,7 @@ func (c *WebChannel) ID() string {
 	return "web"
 }
 
-func (c *WebChannel) Start(ctx gateway.ChannelContext) error {
+func (c *WebChannel) Start(ctx api.ChannelContext) error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
 		c.handleWebSocket(w, r, ctx)
@@ -96,7 +99,7 @@ func (c *WebChannel) Stop() error {
 	return nil
 }
 
-func (c *WebChannel) Send(session gateway.SessionContext, message string) error {
+func (c *WebChannel) Send(session api.SessionContext, message string) error {
 	c.mu.RLock()
 	conn, ok := c.connections[session.UserID]
 	c.mu.RUnlock()
@@ -109,7 +112,7 @@ func (c *WebChannel) Send(session gateway.SessionContext, message string) error 
 }
 
 // SendSignal implements the gateway.SignalingChannel interface
-func (c *WebChannel) SendSignal(session gateway.SessionContext, signal string) error {
+func (c *WebChannel) SendSignal(session api.SessionContext, signal string) error {
 	c.mu.RLock()
 	conn, ok := c.connections[session.UserID]
 	c.mu.RUnlock()
@@ -130,7 +133,7 @@ func (c *WebChannel) SendSignal(session gateway.SessionContext, signal string) e
 }
 
 // Stream implements gateway.Channel.Stream
-func (c *WebChannel) Stream(session gateway.SessionContext, blocks <-chan llm.ContentBlock) error {
+func (c *WebChannel) Stream(session api.SessionContext, blocks <-chan llm.ContentBlock) error {
 	c.mu.RLock()
 	conn, ok := c.connections[session.UserID]
 	c.mu.RUnlock()
@@ -149,6 +152,14 @@ func (c *WebChannel) Stream(session gateway.SessionContext, blocks <-chan llm.Co
 			if block.Source.Type == "base64" && len(block.Source.Data) > 0 {
 				msg["data"] = base64.StdEncoding.EncodeToString(block.Source.Data)
 				msg["mime"] = block.Source.MediaType
+			} else if block.Source.Type == "file" && block.Source.Path != "" {
+				fileData, err := os.ReadFile(block.Source.Path)
+				if err == nil {
+					msg["data"] = base64.StdEncoding.EncodeToString(fileData)
+					msg["mime"] = block.Source.MediaType
+				} else {
+					slog.Error("Failed to read local image for stream", "path", block.Source.Path, "error", err)
+				}
 			} else if block.Source.Type == "url" {
 				msg["url"] = block.Source.URL
 			}
@@ -173,7 +184,7 @@ func (c *WebChannel) Stream(session gateway.SessionContext, blocks <-chan llm.Co
 	return conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"done"}`))
 }
 
-func (c *WebChannel) handleWebSocket(w http.ResponseWriter, r *http.Request, ctx gateway.ChannelContext) {
+func (c *WebChannel) handleWebSocket(w http.ResponseWriter, r *http.Request, ctx api.ChannelContext) {
 	rawConn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		slog.Error("WS Upgrade failed", "error", err)
@@ -192,17 +203,21 @@ func (c *WebChannel) handleWebSocket(w http.ResponseWriter, r *http.Request, ctx
 	c.mu.Unlock()
 
 	// Send history immediately (if any)
-	historyMsgs := c.history.GetMessages()
-	if len(historyMsgs) > 0 {
-		historyData := map[string]interface{}{
-			"type": "history",
-			"data": historyMsgs,
-		}
-		historyJSON, err := json.Marshal(historyData)
-		if err != nil {
-			slog.Error("Failed to marshal history", "error", err)
-		} else {
-			conn.WriteMessage(websocket.TextMessage, historyJSON)
+	// For Web UI, we use "web_global" as the history sync key for now
+	h, err := c.sessions.GetHistory("web_global")
+	if err == nil {
+		historyMsgs := h.GetMessagesForUI()
+		if len(historyMsgs) > 0 {
+			historyData := map[string]any{
+				"type": "history",
+				"data": historyMsgs,
+			}
+			historyJSON, err := json.Marshal(historyData)
+			if err != nil {
+				slog.Error("Failed to marshal history", "error", err)
+			} else {
+				conn.WriteMessage(websocket.TextMessage, historyJSON)
+			}
 		}
 	}
 
@@ -214,10 +229,10 @@ func (c *WebChannel) handleWebSocket(w http.ResponseWriter, r *http.Request, ctx
 	}()
 
 	// Init Session Context
-	session := gateway.SessionContext{
+	session := api.SessionContext{
 		ChannelID: "web",
 		UserID:    userID,
-		ChatID:    "global",
+		ChatID:    "global", // Currently hardcoded to global for Web UI
 		Username:  "WebUser",
 	}
 
@@ -228,7 +243,7 @@ func (c *WebChannel) handleWebSocket(w http.ResponseWriter, r *http.Request, ctx
 		}
 
 		var content string
-		var files []gateway.FileAttachment
+		var files []api.FileAttachment
 
 		// Try to parse as JSON (includes images)
 		var incoming IncomingMessage
@@ -242,12 +257,35 @@ func (c *WebChannel) handleWebSocket(w http.ResponseWriter, r *http.Request, ctx
 					continue
 				}
 
-				files = append(files, gateway.FileAttachment{
+				// Ensure attachments directory exists
+				attachmentsDir := "data/attachments"
+				if err := os.MkdirAll(attachmentsDir, 0755); err != nil {
+					slog.Error("Failed to create attachments dir", "error", err)
+					continue
+				}
+
+				// Generate unique local path based on content hash (SHA-256)
+				hash := sha256.Sum256(data)
+				// Prefix with 8-char hex timestamp for easy expiration checks
+				_, ext := utils.DetectMimeAndExt(data)
+				localFileName := fmt.Sprintf("%s%s%s", utils.GenerateTimestampPrefix(), hex.EncodeToString(hash[:]), ext)
+				localPath := fmt.Sprintf("%s/%s", attachmentsDir, localFileName)
+
+				// Write directly to disk (if it doesn't already exist to save IO)
+				if _, err := os.Stat(localPath); os.IsNotExist(err) {
+					if err := os.WriteFile(localPath, data, 0644); err != nil {
+						slog.Error("Failed to save image to disk", "path", localPath, "error", err)
+						continue
+					}
+				}
+
+				files = append(files, api.FileAttachment{
 					Filename: img.Name,
 					MimeType: img.Mime,
-					Data:     data,
+					Data:     nil, // Don't hold in memory
+					Path:     localPath,
 				})
-				slog.Debug("Received image", "name", img.Name, "bytes", len(data))
+				slog.Debug("Received and saved image directly to disk", "name", img.Name, "path", localPath)
 			}
 		} else {
 			// Fallback: treat as plain text (backward compatibility)
@@ -255,7 +293,7 @@ func (c *WebChannel) handleWebSocket(w http.ResponseWriter, r *http.Request, ctx
 		}
 
 		// Send to Gateway
-		unifiedMsg := &gateway.UnifiedMessage{
+		unifiedMsg := &api.UnifiedMessage{
 			Session: session,
 			Content: content,
 			Files:   files,

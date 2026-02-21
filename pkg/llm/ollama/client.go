@@ -2,6 +2,7 @@ package ollama
 
 import (
 	"context"
+	"genesis/pkg/config"
 	"genesis/pkg/llm"
 	"genesis/pkg/llm/openailm"
 )
@@ -13,7 +14,7 @@ type OllamaClient struct {
 }
 
 // NewOllamaClient creates an Ollama client using the OpenAI compatibility layer
-func NewOllamaClient(model string, baseURL string, options map[string]any) (*OllamaClient, error) {
+func NewOllamaClient(model string, baseURL string, options map[string]any, sys *config.SystemConfig) (*OllamaClient, error) {
 	// Ollama APIs are compatible with OpenAI.
 	apiKey := "ollama"
 
@@ -25,7 +26,7 @@ func NewOllamaClient(model string, baseURL string, options map[string]any) (*Oll
 		}
 	}
 
-	client, err := openailm.NewClient("ollama", apiKey, model, baseURL, options)
+	client, err := openailm.NewClient("ollama", apiKey, model, baseURL, options, sys)
 	if err != nil {
 		return nil, err
 	}
@@ -43,14 +44,10 @@ func (o *OllamaClient) Provider() string {
 	return "ollama"
 }
 
-func (o *OllamaClient) SetDebug(enabled bool) {
-	o.client.SetDebug(enabled)
-}
-
 func (o *OllamaClient) IsTransientError(err error) bool {
 	return o.client.IsTransientError(err)
 }
 
-func (o *OllamaClient) StreamChat(ctx context.Context, messages []llm.Message, availableTools any) (<-chan llm.StreamChunk, error) {
+func (o *OllamaClient) StreamChat(ctx context.Context, messages []llm.Message, availableTools []llm.Tool) (<-chan llm.StreamChunk, error) {
 	return o.client.StreamChat(ctx, messages, availableTools)
 }

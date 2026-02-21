@@ -21,6 +21,19 @@ type Config struct {
 	SystemPrompt string `json:"system_prompt"`
 }
 
+// DeepCopy creates a shallow copy of Config.
+// Since Channels is a map, we need to clone the map itself.
+func (c *Config) DeepCopy() *Config {
+	newCfg := *c
+	if c.Channels != nil {
+		newCfg.Channels = make(map[string]jsoniter.RawMessage)
+		for k, v := range c.Channels {
+			newCfg.Channels[k] = v
+		}
+	}
+	return &newCfg
+}
+
 // Validate ensures the configuration structure contains all mandatory fields.
 // It acts as a primary guard before the system proceeds to initialization.
 func (c *Config) Validate() error {
@@ -70,33 +83,46 @@ type SystemConfig struct {
 	// EnableTools globally toggles the tool calling (agentic) functionality.
 	// If false, the AI will not be provided with any external tools/capabilities.
 	EnableTools bool `json:"enable_tools"`
+	// HistorySummarizeThreshold is the number of messages after which summarization is triggered.
+	HistorySummarizeThreshold int `json:"history_summarize_threshold"`
+	// HistoryKeepRecentCount is the number of messages to keep in history after summarization.
+	HistoryKeepRecentCount int `json:"history_keep_recent_count"`
+	// HistoryMaxChars is the character limit for the conversation history before triggering summarization.
+	HistoryMaxChars int `json:"history_max_chars"`
+	// HistoryMaxTokens is the token limit for the conversation history before triggering summarization.
+	// This uses the actual usage reported by the LLM.
+	HistoryMaxTokens int `json:"history_max_tokens"`
 }
 
-// DefaultSystemConfig returns a SystemConfig pointer initialized with hardcoded
-// safe default values. This is used as a fallback when the system.json file
-// is missing or corrupt, ensuring the engine can always start.
+// DeepCopy creates a full copy of SystemConfig.
+func (s *SystemConfig) DeepCopy() *SystemConfig {
+	newSys := *s
+	return &newSys
+}
+
+// DefaultSystemConfig returns a SystemConfig pointer initialized with hardcoded safe defaults.
 func DefaultSystemConfig() *SystemConfig {
 	return &SystemConfig{
-		MaxRetries:            3,
-		RetryDelayMs:          500,
-		LLMTimeoutMs:          600000,
-		OllamaDefaultURL:      "http://localhost:11434/v1",
-		InternalChannelBuffer: 100,
-		ThinkingInitDelayMs:   500,
-		TelegramMessageLimit:  4000,
-		DownloadTimeoutMs:     10000,
-		ShowThinking:          true,
-		LogLevel:              "info",
-		EnableTools:           true,
+		MaxRetries:                3,
+		RetryDelayMs:              500,
+		LLMTimeoutMs:              600000,
+		OllamaDefaultURL:          "http://localhost:11434/v1",
+		InternalChannelBuffer:     100,
+		ThinkingInitDelayMs:       500,
+		TelegramMessageLimit:      4000,
+		DownloadTimeoutMs:         10000,
+		ShowThinking:              true,
+		LogLevel:                  "info",
+		EnableTools:               true,
+		HistorySummarizeThreshold: 10,
+		HistoryKeepRecentCount:    5,
+		HistoryMaxChars:           10000,
+		HistoryMaxTokens:          4000,
 	}
 }
 
-// Load reads and parses the JSON configuration files from the current working directory.
-// It first attempts to load 'config.json' (app config). If this file is missing, it returns an error.
-// Then it calls LoadSystemConfig to load 'system.json'.
-// Returns pointers to the loaded Config and SystemConfig, or an error if the mandatory app config fails.
+// Load reads and parses the JSON configuration files and returns configuration objects.
 func Load() (*Config, *SystemConfig, error) {
-	// 1. Load Application Config
 	appPath := "config.json"
 	if _, err := os.Stat(appPath); os.IsNotExist(err) {
 		return nil, nil, fmt.Errorf("config file '%s' not found. please create one", appPath)
@@ -112,12 +138,10 @@ func Load() (*Config, *SystemConfig, error) {
 		return nil, nil, fmt.Errorf("failed to parse config file: %w", err)
 	}
 
-	// 1a. Validate structure integrity
 	if err := cfg.Validate(); err != nil {
 		return nil, nil, err
 	}
 
-	// 2. Load System Config independently
 	sysCfg := LoadSystemConfig("system.json")
 
 	return &cfg, sysCfg, nil
@@ -129,11 +153,11 @@ func LoadSystemConfig(path string) *SystemConfig {
 
 	file, err := os.ReadFile(path)
 	if err != nil {
-		return cfg // File not found, use defaults
+		return cfg
 	}
 
 	if err := jsoniter.ConfigCompatibleWithStandardLibrary.Unmarshal(file, cfg); err != nil {
-		return cfg // Parse failed, use defaults
+		return cfg
 	}
 
 	return cfg

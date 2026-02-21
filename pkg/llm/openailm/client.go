@@ -5,8 +5,10 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"genesis/pkg/config"
 	"genesis/pkg/llm"
 	"log/slog"
+	"os"
 	"reflect"
 	"strings"
 	"time"
@@ -20,15 +22,15 @@ import (
 
 // Client is a wrapper around the official OpenAI Go SDK
 type Client struct {
-	client       *openai.Client
-	provider     string
-	model        string
-	debugEnabled bool
-	options      map[string]any
+	client    *openai.Client
+	provider  string
+	model     string
+	sysConfig *config.SystemConfig
+	options   map[string]any
 }
 
 // NewClient creates a new OpenAI client
-func NewClient(provider string, apiKey string, model string, baseURL string, options map[string]any) (*Client, error) {
+func NewClient(provider string, apiKey string, model string, baseURL string, options map[string]any, sys *config.SystemConfig) (*Client, error) {
 	opts := []option.RequestOption{
 		option.WithAPIKey(apiKey),
 	}
@@ -40,19 +42,16 @@ func NewClient(provider string, apiKey string, model string, baseURL string, opt
 	client := openai.NewClient(opts...)
 
 	return &Client{
-		client:   &client,
-		provider: provider,
-		model:    model,
-		options:  options,
+		client:    &client,
+		provider:  provider,
+		model:     model,
+		options:   options,
+		sysConfig: sys,
 	}, nil
 }
 
 func (c *Client) Provider() string {
 	return c.provider
-}
-
-func (c *Client) SetDebug(enabled bool) {
-	c.debugEnabled = enabled
 }
 
 func (c *Client) IsTransientError(err error) bool {
@@ -80,7 +79,7 @@ func (c *Client) IsTransientError(err error) bool {
 	return false
 }
 
-func (c *Client) StreamChat(ctx context.Context, messages []llm.Message, availableTools any) (<-chan llm.StreamChunk, error) {
+func (c *Client) StreamChat(ctx context.Context, messages []llm.Message, availableTools []llm.Tool) (<-chan llm.StreamChunk, error) {
 	chunkCh := make(chan llm.StreamChunk, 100)
 
 	// Convert messages
@@ -144,7 +143,7 @@ func (c *Client) StreamChat(ctx context.Context, messages []llm.Message, availab
 		var lastUsage *llm.LLMUsage
 
 		// StreamDebugger handles file creation and lifecycle
-		debugger := llm.NewStreamDebugger(ctx, c.provider, c.debugEnabled)
+		debugger := llm.NewStreamDebugger(ctx, c.provider, c.sysConfig)
 		defer debugger.Close()
 
 		var assistantTextAccumulator strings.Builder
@@ -341,8 +340,19 @@ func (c *Client) convertMessages(messages []llm.Message) []responses.ResponseInp
 					case llm.BlockTypeImage:
 						if block.Source != nil {
 							imgURL := block.Source.URL
-							if block.Source.Type == "base64" {
-								imgURL = fmt.Sprintf("data:%s;base64,%s", block.Source.MediaType, base64.StdEncoding.EncodeToString(block.Source.Data))
+							if block.Source.Type == "base64" || block.Source.Type == "file" {
+								data := block.Source.Data
+								if len(data) == 0 && block.Source.Path != "" {
+									var err error
+									data, err = os.ReadFile(block.Source.Path)
+									if err != nil {
+										slog.Error("Failed to read image from path", "path", block.Source.Path, "error", err)
+										continue
+									}
+								}
+								if len(data) > 0 {
+									imgURL = fmt.Sprintf("data:%s;base64,%s", block.Source.MediaType, base64.StdEncoding.EncodeToString(data))
+								}
 							}
 							contentParts = append(contentParts, responses.ResponseInputContentUnionParam{
 								OfInputImage: &responses.ResponseInputImageParam{
@@ -391,33 +401,31 @@ func (c *Client) convertMessages(messages []llm.Message) []responses.ResponseInp
 	return items
 }
 
-func (c *Client) convertTools(availableTools any) []responses.ToolUnionParam {
-	if availableTools == nil {
+func (c *Client) convertTools(availableTools []llm.Tool) []responses.ToolUnionParam {
+	if len(availableTools) == 0 {
 		return nil
 	}
 
-	rawTools, ok := availableTools.([]map[string]any)
-	if !ok {
-		return nil
-	}
-
-	var tools []responses.ToolUnionParam
-	for _, t := range rawTools {
-		if funcMap, ok := t["function"].(map[string]any); ok {
-			name, _ := funcMap["name"].(string)
-			desc, _ := funcMap["description"].(string)
-			params, _ := funcMap["parameters"].(map[string]any)
-
-			tools = append(tools, responses.ToolUnionParam{
-				OfFunction: &responses.FunctionToolParam{
-					Name:        name,
-					Description: openai.String(desc),
-					Parameters:  params,
-				},
-			})
+	var toolsParam []responses.ToolUnionParam
+	for _, t := range availableTools {
+		// OpenAI expects a full JSON Schema object for parameters
+		parameters := map[string]any{
+			"type":       "object",
+			"properties": t.Parameters(),
 		}
+		if required := t.RequiredParameters(); len(required) > 0 {
+			parameters["required"] = required
+		}
+
+		toolsParam = append(toolsParam, responses.ToolUnionParam{
+			OfFunction: &responses.FunctionToolParam{
+				Name:        t.Name(),
+				Description: openai.String(t.Description()),
+				Parameters:  parameters,
+			},
+		})
 	}
-	return tools
+	return toolsParam
 }
 
 // findFunctionCalls 在任意 JSON 結構中遞迴查找 type=="function_call" 的物件
